@@ -8,90 +8,165 @@ const USERNAME_OPEN_DATE = new Date("2026-11-11T00:00:00+05:30").getTime();
 const LAUNCH_DATE = new Date("2026-11-25T00:00:00+05:30").getTime();
 
 type ActiveModal = "none" | "contact" | "privacy";
+type ContactCategory = "marketing" | "updates" | "press";
 
-interface TimeLeft {
+type WaitlistSubmissionState =
+  | { status: "idle" }
+  | { status: "submitting" }
+  | { status: "success"; duplicate: boolean }
+  | { status: "error"; message: string };
+
+type ContactSubmissionState =
+  | { status: "idle" }
+  | { status: "submitting" }
+  | { status: "success" }
+  | { status: "error"; message: string };
+
+interface CountdownValues {
   days: string;
   hours: string;
   minutes: string;
   seconds: string;
+  usernameDaysLeft: number;
+}
+
+function calculateTimeRemaining(): CountdownValues {
+  const now = Date.now();
+  const diffLaunch = Math.max(0, LAUNCH_DATE - now);
+
+  const d = Math.floor(diffLaunch / (1000 * 60 * 60 * 24));
+  const h = Math.floor((diffLaunch / (1000 * 60 * 60)) % 24);
+  const m = Math.floor((diffLaunch / 1000 / 60) % 60);
+  const s = Math.floor((diffLaunch / 1000) % 60);
+
+  const diffUsername = Math.max(0, USERNAME_OPEN_DATE - now);
+  const usernameDaysLeft = Math.ceil(diffUsername / (1000 * 60 * 60 * 24));
+
+  return {
+    days: String(d).padStart(2, "0"),
+    hours: String(h).padStart(2, "0"),
+    minutes: String(m).padStart(2, "0"),
+    seconds: String(s).padStart(2, "0"),
+    usernameDaysLeft,
+  };
+}
+
+/**
+ * Isolated countdown component so the 1-second timer never re-renders
+ * the forms, modals, or background shader.
+ */
+function LaunchCountdown() {
+  const [time, setTime] = useState<CountdownValues | null>(null);
+
+  useEffect(() => {
+    const update = () => setTime(calculateTimeRemaining());
+    update();
+    const interval = window.setInterval(update, 1000);
+    return () => window.clearInterval(interval);
+  }, []);
+
+  const units = [
+    { label: "Days", value: time?.days ?? "--" },
+    { label: "Hours", value: time?.hours ?? "--" },
+    { label: "Minutes", value: time?.minutes ?? "--" },
+    { label: "Seconds", value: time?.seconds ?? "--" },
+  ];
+
+  return (
+    <section
+      aria-label="Time remaining until launch"
+      className="mt-10 w-full max-w-xl"
+    >
+      <div className="overflow-hidden rounded-2xl border border-white/[0.08] bg-white/[0.02] backdrop-blur-xl">
+        <div className="grid grid-cols-4 divide-x divide-white/[0.08]">
+          {units.map((unit) => (
+            <div
+              key={unit.label}
+              className="flex flex-col items-center justify-center px-3 py-5 sm:px-6 sm:py-6"
+            >
+              <span className="font-mono text-2xl font-semibold tracking-tight text-white sm:text-4xl tabular-nums">
+                {unit.value}
+              </span>
+              <span className="mt-1.5 text-[11px] font-medium tracking-wider text-neutral-400 uppercase">
+                {unit.label}
+              </span>
+            </div>
+          ))}
+        </div>
+
+        <div className="flex flex-col items-center justify-between gap-2 border-t border-white/[0.08] bg-white/[0.01] px-4 py-2.5 text-xs text-neutral-400 sm:flex-row">
+          <div className="flex items-center gap-2">
+            <span className="h-1.5 w-1.5 rounded-full bg-lime-300" />
+            <span>
+              Usernames open <strong className="font-medium text-neutral-200">11 Nov</strong>
+              {time && time.usernameDaysLeft > 0
+                ? ` (${time.usernameDaysLeft}d)`
+                : ""}
+            </span>
+          </div>
+          <span className="hidden text-white/20 sm:inline">·</span>
+          <div>
+            Full release <strong className="font-medium text-neutral-200">25 Nov 2026</strong>
+          </div>
+        </div>
+      </div>
+    </section>
+  );
 }
 
 export default function DownPrelaunchPage() {
-  const [isLoaded, setIsLoaded] = useState(false);
-
-  // Countdown states
-  const [launchTimeLeft, setLaunchTimeLeft] = useState<TimeLeft>({
-    days: "19",
-    hours: "00",
-    minutes: "00",
-    seconds: "00",
-  });
-  const [usernameDaysLeft, setUsernameDaysLeft] = useState<number>(5);
-
-  // Supabase Email Waitlist states
+  // Waitlist form state
   const [email, setEmail] = useState("");
   const [marketingOptIn, setMarketingOptIn] = useState(true);
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [isSubscribed, setIsSubscribed] = useState(false);
-  const [alreadyRegistered, setAlreadyRegistered] = useState(false);
-  const [emailError, setEmailError] = useState<string | null>(null);
+  const [waitlistState, setWaitlistState] = useState<WaitlistSubmissionState>({
+    status: "idle",
+  });
 
-  // Supabase Contact Modal states
+  // Modal & Contact form state
   const [activeModal, setActiveModal] = useState<ActiveModal>("none");
-  const [contactType, setContactType] = useState<"marketing" | "updates" | "press">("marketing");
+  const [contactType, setContactType] = useState<ContactCategory>("marketing");
   const [contactEmail, setContactEmail] = useState("");
   const [contactMessage, setContactMessage] = useState("");
-  const [isSendingContact, setIsSendingContact] = useState(false);
-  const [contactSent, setContactSent] = useState(false);
-  const [contactError, setContactError] = useState<string | null>(null);
+  const [contactState, setContactState] = useState<ContactSubmissionState>({
+    status: "idle",
+  });
 
-  // Smooth preloader reveal
+  // Lock background scroll & bind Escape key when a modal is open
   useEffect(() => {
-    const timer = setTimeout(() => setIsLoaded(true), 350);
-    return () => clearTimeout(timer);
-  }, []);
+    if (activeModal === "none") return;
 
-  // Live Countdown Timer (11 Nov 2026 & 25 Nov 2026)
-  useEffect(() => {
-    const updateTimers = () => {
-      const now = Date.now();
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
 
-      const diffLaunch = Math.max(0, LAUNCH_DATE - now);
-      const d = Math.floor(diffLaunch / (1000 * 60 * 60 * 24));
-      const h = Math.floor((diffLaunch / (1000 * 60 * 60)) % 24);
-      const m = Math.floor((diffLaunch / 1000 / 60) % 60);
-      const s = Math.floor((diffLaunch / 1000) % 60);
-
-      setLaunchTimeLeft({
-        days: String(d).padStart(2, "0"),
-        hours: String(h).padStart(2, "0"),
-        minutes: String(m).padStart(2, "0"),
-        seconds: String(s).padStart(2, "0"),
-      });
-
-      const diffUsername = Math.max(0, USERNAME_OPEN_DATE - now);
-      setUsernameDaysLeft(Math.ceil(diffUsername / (1000 * 60 * 60 * 24)));
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setActiveModal("none");
     };
 
-    updateTimers();
-    const interval = setInterval(updateTimers, 1000);
-    return () => clearInterval(interval);
-  }, []);
-
-  // Lock background scroll when modal is open
-  useEffect(() => {
-    document.body.style.overflow = activeModal !== "none" ? "hidden" : "";
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", handleKeyDown);
+    };
   }, [activeModal]);
 
-  // Live Supabase Insert for Email Collection
+  const openContactModal = () => {
+    setContactState({ status: "idle" });
+    setActiveModal("contact");
+  };
+
   const handleEmailSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     const cleanEmail = email.trim().toLowerCase();
-    if (!cleanEmail || !cleanEmail.includes("@")) return;
 
-    setIsSubmitting(true);
-    setEmailError(null);
-    setAlreadyRegistered(false);
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+      setWaitlistState({
+        status: "error",
+        message: "Please enter a valid email address.",
+      });
+      return;
+    }
+
+    setWaitlistState({ status: "submitting" });
 
     try {
       const { error } = await supabase.from("waitlist_subscribers").insert([
@@ -104,30 +179,38 @@ export default function DownPrelaunchPage() {
 
       if (error) {
         if (error.code === "23505") {
-          setAlreadyRegistered(true);
-          setIsSubscribed(true);
+          setWaitlistState({ status: "success", duplicate: true });
         } else {
-          setEmailError("Unable to register your email. Please try again.");
+          setWaitlistState({
+            status: "error",
+            message: "Unable to join right now. Please try again.",
+          });
         }
       } else {
-        setIsSubscribed(true);
+        setWaitlistState({ status: "success", duplicate: false });
       }
     } catch {
-      setEmailError("Network error occurred. Please check your connection.");
-    } finally {
-      setIsSubmitting(false);
+      setWaitlistState({
+        status: "error",
+        message: "Network error. Please check your connection and try again.",
+      });
     }
   };
 
-  // Live Supabase Insert for Marketing / Contact Inquiries
   const handleContactSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     const cleanEmail = contactEmail.trim().toLowerCase();
     const cleanMessage = contactMessage.trim();
-    if (!cleanEmail || !cleanMessage) return;
 
-    setIsSendingContact(true);
-    setContactError(null);
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail) || !cleanMessage) {
+      setContactState({
+        status: "error",
+        message: "Please provide a valid email and message.",
+      });
+      return;
+    }
+
+    setContactState({ status: "submitting" });
 
     try {
       const { error } = await supabase.from("contact_inquiries").insert([
@@ -139,218 +222,161 @@ export default function DownPrelaunchPage() {
       ]);
 
       if (error) {
-        setContactError("Unable to dispatch message. Please try again shortly.");
+        setContactState({
+          status: "error",
+          message: "Unable to send your message right now. Please try again.",
+        });
       } else {
-        setContactSent(true);
+        setContactState({ status: "success" });
         setContactEmail("");
         setContactMessage("");
       }
     } catch {
-      setContactError("Network error. Please check your connection.");
-    } finally {
-      setIsSendingContact(false);
+      setContactState({
+        status: "error",
+        message: "Network error. Please check your connection.",
+      });
     }
   };
 
   return (
-    <div className="relative min-h-dvh w-full overflow-x-hidden bg-[#030407] text-white selection:bg-cyan-400 selection:text-black font-sans antialiased">
-      {/* Cinematic Entry Preloader */}
-      <div
-        className={`fixed inset-0 z-50 flex flex-col items-center justify-center bg-[#030407] transition-all duration-700 ease-[cubic-bezier(0.16,1,0.3,1)] ${
-          isLoaded
-            ? "pointer-events-none opacity-0 scale-105"
-            : "opacity-100 scale-100"
-        }`}
-      >
-        <div className="flex items-center gap-3">
-          <div className="h-3 w-3 rounded-full bg-cyan-400 shadow-[0_0_20px_rgba(34,211,238,0.8)] animate-pulse" />
-          <span className="text-2xl font-bold tracking-tighter text-white">
-            down<span className="text-cyan-400">.</span>
-          </span>
-        </div>
-      </div>
-
-      {/* Interactive Dot Distortion Shader & Mesh Gradients */}
+    <div className="relative min-h-dvh w-full overflow-x-hidden bg-[#060709] font-sans text-[#F5F5F2] antialiased selection:bg-lime-300 selection:text-black">
+      {/* Ambient Background Shader */}
       <DotDistortionShader />
 
-      {/* Main UI Wrapper */}
-      <div
-        className={`relative z-10 flex min-h-dvh flex-col justify-between transition-all duration-1000 ease-[cubic-bezier(0.16,1,0.3,1)] ${
-          isLoaded ? "translate-y-0 opacity-100" : "translate-y-4 opacity-0"
-        }`}
-      >
-        {/* Navigation Header */}
-        <header className="mx-auto flex w-full max-w-7xl items-center justify-between px-6 pt-8 sm:px-12 sm:pt-10">
-          <a href="#top" className="group flex items-center gap-2.5 focus:outline-none">
-            <div className="h-3.5 w-3.5 rounded-full bg-gradient-to-tr from-lime-400 via-cyan-400 to-indigo-500 transition-transform duration-300 group-hover:scale-125 shadow-[0_0_20px_rgba(56,189,248,0.7)]" />
-            <span className="text-2xl font-extrabold tracking-tighter text-white">
-              down<span className="text-cyan-400">.</span>
-            </span>
+      {/* Main Layout */}
+      <div className="relative z-10 flex min-h-dvh flex-col justify-between">
+        {/* Header */}
+        <header className="mx-auto flex w-full max-w-6xl items-center justify-between px-6 pt-7 sm:px-10 sm:pt-9">
+          <a
+            href="#top"
+            className="inline-flex items-center gap-2 rounded-lg py-1 text-xl font-bold tracking-tight text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-lime-300"
+          >
+            <span>down</span>
+            <span className="text-lime-300">.</span>
           </a>
 
-          <nav className="flex items-center gap-2.5">
+          <nav className="flex items-center gap-1 sm:gap-2">
             <button
               type="button"
-              onClick={() => {
-                setContactSent(false);
-                setContactError(null);
-                setActiveModal("contact");
-              }}
-              className="rounded-full border border-white/10 bg-white/[0.03] px-4 py-2 text-xs font-medium text-neutral-300 backdrop-blur-xl transition-all duration-200 hover:border-white/25 hover:bg-white/[0.07] hover:text-white active:scale-95 cursor-pointer shadow-[0_4px_20px_rgba(0,0,0,0.3)]"
+              onClick={openContactModal}
+              className="rounded-lg px-3 py-2 text-xs font-medium text-neutral-400 transition-colors hover:bg-white/[0.04] hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-lime-300 cursor-pointer"
             >
               Contact
             </button>
             <button
               type="button"
               onClick={() => setActiveModal("privacy")}
-              className="rounded-full border border-white/10 bg-white/[0.03] px-4 py-2 text-xs font-medium text-neutral-300 backdrop-blur-xl transition-all duration-200 hover:border-white/25 hover:bg-white/[0.07] hover:text-white active:scale-95 cursor-pointer shadow-[0_4px_20px_rgba(0,0,0,0.3)]"
+              className="rounded-lg px-3 py-2 text-xs font-medium text-neutral-400 transition-colors hover:bg-white/[0.04] hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-lime-300 cursor-pointer"
             >
               Privacy
             </button>
-            <div className="hidden sm:inline-flex items-center gap-2.5 rounded-full border border-lime-400/20 bg-lime-400/[0.06] px-4 py-2 text-xs font-medium text-lime-300 backdrop-blur-xl">
-              <span className="relative flex h-2 w-2">
-                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-lime-400 opacity-75" />
-                <span className="relative inline-flex h-2 w-2 rounded-full bg-lime-400" />
-              </span>
-              <span>Launching 25 Nov 2026</span>
-            </div>
           </nav>
         </header>
 
         {/* Hero Section */}
-        <main className="mx-auto my-auto flex w-full max-w-4xl flex-col items-center px-6 py-12 text-center sm:px-8 sm:py-16">
-          {/* Phase 01 Badge */}
-          <div className="mb-6 inline-flex items-center gap-2.5 rounded-full border border-white/10 bg-white/[0.03] px-4 py-1.5 text-xs font-medium text-neutral-300 backdrop-blur-2xl shadow-[0_4px_20px_rgba(0,0,0,0.4)]">
-            <span className="rounded-full bg-gradient-to-r from-lime-300 to-cyan-400 px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-black">
-              Phase 01
-            </span>
-            <span className="text-neutral-300">
-              Username registry opens <strong className="text-white font-semibold">11 Nov 2026</strong>
-            </span>
-            <span className="font-mono text-cyan-400">({usernameDaysLeft}d)</span>
+        <main className="mx-auto my-auto flex w-full max-w-3xl flex-col items-center px-6 py-16 text-center sm:px-8 sm:py-20">
+          {/* Eyebrow Pill */}
+          <div className="mb-6 inline-flex items-center gap-2 rounded-full border border-white/[0.08] bg-white/[0.03] px-3.5 py-1 text-xs font-medium text-neutral-300 backdrop-blur-md">
+            <span className="h-1.5 w-1.5 rounded-full bg-lime-300" />
+            <span>Early access · November 2026</span>
           </div>
 
-          <h1 className="max-w-3xl text-5xl font-bold tracking-tight text-white sm:text-7xl md:text-8xl leading-[1.03]">
+          {/* Headline */}
+          <h1 className="max-w-2xl text-4xl font-semibold tracking-tight text-white sm:text-6xl md:text-7xl leading-[1.05]">
             A social space for{" "}
-            <span className="bg-gradient-to-r from-lime-300 via-cyan-400 to-indigo-400 bg-clip-text text-transparent">
-              real life.
-            </span>
+            <span className="text-lime-300">real life.</span>
           </h1>
 
-          <p className="mt-6 max-w-xl text-base leading-relaxed text-neutral-400 sm:text-lg">
-            Zero algorithmic noise. Pure presence, spontaneous connections, and spaces that feel alive. Opening globally on{" "}
-            <span className="text-neutral-200 font-medium">25 November 2026</span>.
+          {/* Supporting Copy */}
+          <p className="mt-5 max-w-lg text-base leading-relaxed text-neutral-300 sm:text-lg">
+            A quieter social app for staying close to friends and making spontaneous plans—without algorithmic noise.
           </p>
 
-          {/* Countdown Grid */}
-          <div className="mt-10 w-full max-w-2xl">
-            <div className="mb-3 flex items-center justify-between px-1 text-[11px] font-medium tracking-[0.2em] text-neutral-400 uppercase">
-              <span>Global Launch Countdown</span>
-              <span className="font-mono text-lime-400">25 · 11 · 2026</span>
-            </div>
+          {/* Isolated Countdown + Key Dates */}
+          <LaunchCountdown />
 
-            <div className="grid grid-cols-4 gap-3 sm:gap-4">
-              {[
-                { label: "DAYS", value: launchTimeLeft.days },
-                { label: "HOURS", value: launchTimeLeft.hours },
-                { label: "MINUTES", value: launchTimeLeft.minutes },
-                { label: "SECONDS", value: launchTimeLeft.seconds },
-              ].map((unit) => (
-                <div
-                  key={unit.label}
-                  className="group relative flex flex-col items-center justify-center overflow-hidden rounded-2xl border border-white/10 bg-white/[0.02] px-3 py-5 sm:px-6 sm:py-7 backdrop-blur-2xl shadow-[0_8px_32px_rgba(0,0,0,0.5)] transition-all duration-300 hover:border-cyan-400/40 hover:bg-white/[0.05]"
-                >
-                  <div className="pointer-events-none absolute -top-8 h-14 w-14 rounded-full bg-cyan-400/10 blur-xl opacity-0 transition-opacity group-hover:opacity-100" />
-                  <span className="font-mono text-3xl font-bold tracking-tighter text-white sm:text-5xl md:text-6xl tabular-nums">
-                    {unit.value}
-                  </span>
-                  <span className="mt-2 text-[9px] sm:text-[10px] font-semibold tracking-[0.25em] text-neutral-400">
-                    {unit.label}
-                  </span>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* Schedule Cards */}
-          <div className="mt-6 grid w-full max-w-2xl grid-cols-1 gap-3 sm:grid-cols-2">
-            <div className="flex items-center justify-between rounded-xl border border-white/10 bg-white/[0.02] px-4 py-3 text-left backdrop-blur-xl">
-              <div>
-                <p className="text-[10px] font-bold uppercase tracking-wider text-lime-300">
-                  Milestone 1
-                </p>
-                <p className="text-xs font-medium text-neutral-200">Username Collection Opens</p>
-              </div>
-              <span className="rounded-lg bg-white/[0.04] px-3 py-1 font-mono text-xs font-semibold text-white border border-white/10">
-                11 Nov 2026
-              </span>
-            </div>
-
-            <div className="flex items-center justify-between rounded-xl border border-white/10 bg-white/[0.02] px-4 py-3 text-left backdrop-blur-xl">
-              <div>
-                <p className="text-[10px] font-bold uppercase tracking-wider text-cyan-400">
-                  Milestone 2
-                </p>
-                <p className="text-xs font-medium text-neutral-200">Official Platform Launch</p>
-              </div>
-              <span className="rounded-lg bg-white/[0.04] px-3 py-1 font-mono text-xs font-semibold text-white border border-white/10">
-                25 Nov 2026
-              </span>
-            </div>
-          </div>
-
-          {/* Email Subscription Form */}
-          <div className="mt-10 w-full max-w-lg">
-            {!isSubscribed ? (
-              <form onSubmit={handleEmailSubmit} className="flex flex-col gap-3.5">
-                <div className="relative flex flex-col sm:flex-row items-stretch sm:items-center gap-2 sm:gap-0 rounded-2xl sm:rounded-full border border-white/15 bg-white/[0.04] p-1.5 backdrop-blur-3xl transition-all duration-300 focus-within:border-cyan-400 focus-within:bg-white/[0.07] focus-within:shadow-[0_0_40px_-8px_rgba(34,211,238,0.4)] shadow-[0_8px_32px_rgba(0,0,0,0.5)]">
+          {/* Waitlist Form */}
+          <div className="mt-8 w-full max-w-md">
+            {waitlistState.status !== "success" ? (
+              <form onSubmit={handleEmailSubmit} noValidate className="space-y-3">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm: rounded-xl sm:border sm:border-white/15 sm:bg-white/[0.03] sm:p-1.5 sm:backdrop-blur-xl sm:focus-within:border-lime-300/80 transition-colors">
+                  <label htmlFor="waitlist-email" className="sr-only">
+                    Email address
+                  </label>
                   <input
+                    id="waitlist-email"
                     type="email"
                     required
+                    autoComplete="email"
+                    spellCheck={false}
                     value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                    placeholder="Enter your email for launch dispatch..."
-                    className="w-full bg-transparent px-5 py-3.5 sm:py-3 text-sm text-white placeholder-neutral-400 focus:outline-none"
+                    onChange={(e) => {
+                      setEmail(e.target.value);
+                      if (waitlistState.status === "error") {
+                        setWaitlistState({ status: "idle" });
+                      }
+                    }}
+                    placeholder="you@example.com"
+                    aria-invalid={waitlistState.status === "error"}
+                    aria-describedby={
+                      waitlistState.status === "error"
+                        ? "waitlist-error"
+                        : undefined
+                    }
+                    className="min-h-11 w-full rounded-xl border border-white/15 bg-white/[0.04] px-4 py-2.5 text-base text-white placeholder:text-neutral-500 focus:border-lime-300 focus:outline-none sm:min-h-0 sm:border-0 sm:bg-transparent sm:px-3.5 sm:py-2 sm:text-sm"
                   />
                   <button
                     type="submit"
-                    disabled={isSubmitting}
-                    className="shrink-0 rounded-xl sm:rounded-full bg-gradient-to-r from-lime-300 via-cyan-400 to-indigo-500 px-7 py-3 sm:py-2.5 text-xs font-bold tracking-wide text-black shadow-lg transition-all duration-200 hover:opacity-90 active:scale-95 disabled:opacity-50 cursor-pointer"
+                    disabled={waitlistState.status === "submitting"}
+                    className="min-h-11 shrink-0 rounded-xl bg-lime-300 px-5 py-2.5 text-sm font-semibold text-black transition-all hover:bg-lime-200 active:scale-[0.99] disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-lime-300 focus-visible:ring-offset-2 focus-visible:ring-offset-[#060709] sm:min-h-0 sm:rounded-lg cursor-pointer"
                   >
-                    {isSubmitting ? "Securing..." : "Get Early Access →"}
+                    {waitlistState.status === "submitting"
+                      ? "Joining…"
+                      : "Join waitlist"}
                   </button>
                 </div>
 
-                {emailError && (
-                  <p className="text-xs font-medium text-rose-400">{emailError}</p>
+                {waitlistState.status === "error" && (
+                  <p
+                    id="waitlist-error"
+                    role="alert"
+                    className="text-left text-xs font-medium text-rose-400 px-1"
+                  >
+                    {waitlistState.message}
+                  </p>
                 )}
 
-                <div className="flex flex-col sm:flex-row items-center justify-between gap-2 px-2 text-[11px] text-neutral-400">
-                  <label className="inline-flex items-center gap-2 cursor-pointer select-none">
+                <div className="flex items-center justify-between gap-2 px-1 text-xs text-neutral-400">
+                  <label className="inline-flex items-center gap-2 cursor-pointer select-none hover:text-neutral-300">
                     <input
                       type="checkbox"
                       checked={marketingOptIn}
                       onChange={(e) => setMarketingOptIn(e.target.checked)}
-                      className="h-3.5 w-3.5 rounded border-white/25 bg-white/10 accent-cyan-400"
+                      className="h-3.5 w-3.5 rounded border-white/20 bg-white/5 accent-lime-300 focus:ring-lime-300"
                     />
-                    <span>Receive marketing updates & the 11 Nov username alert</span>
+                    <span>Notify me when username registration opens</span>
                   </label>
-                  <button
-                    type="button"
-                    onClick={() => setActiveModal("privacy")}
-                    className="underline decoration-white/30 underline-offset-4 hover:text-white cursor-pointer"
-                  >
-                    Privacy Policy
-                  </button>
                 </div>
               </form>
             ) : (
-              <div className="rounded-2xl border border-lime-400/30 bg-lime-400/10 px-6 py-5 text-center backdrop-blur-2xl shadow-xl">
-                <p className="text-sm font-bold text-lime-300">
-                  {alreadyRegistered ? "You're already registered on the dispatch list." : "You're successfully on the dispatch list."}
+              <div
+                role="status"
+                className="rounded-2xl border border-lime-300/25 bg-lime-300/[0.07] px-5 py-4 text-left backdrop-blur-xl"
+              >
+                <p className="text-sm font-semibold text-lime-300">
+                  {waitlistState.duplicate
+                    ? "You’re already on the waitlist."
+                    : "You’re on the waitlist."}
                 </p>
-                <p className="mt-1.5 text-xs text-neutral-300">
-                  Saved <span className="font-mono text-white">{email}</span>. Look for your early access alert on <strong className="text-white">11 November 2026</strong>.
+                <p className="mt-1 text-xs leading-relaxed text-neutral-300">
+                  We’ll email{" "}
+                  <span className="font-mono text-white">{email.trim()}</span>{" "}
+                  ahead of username registration on{" "}
+                  <strong className="font-medium text-white">
+                    11 November 2026
+                  </strong>
+                  .
                 </p>
               </div>
             )}
@@ -358,79 +384,88 @@ export default function DownPrelaunchPage() {
         </main>
 
         {/* Footer */}
-        <footer className="mx-auto flex w-full max-w-7xl flex-col sm:flex-row items-center justify-between gap-4 border-t border-white/10 px-6 py-8 text-xs text-neutral-400 sm:px-12">
-          <div className="flex items-center gap-2.5">
-            <span className="font-bold text-white tracking-tight">down.</span>
+        <footer className="mx-auto flex w-full max-w-6xl flex-col items-center justify-between gap-4 border-t border-white/[0.08] px-6 py-6 text-xs text-neutral-400 sm:flex-row sm:px-10">
+          <div className="flex items-center gap-2">
+            <span className="font-semibold text-white">down.</span>
             <span>© 2026 All rights reserved.</span>
           </div>
 
-          <div className="flex flex-wrap items-center justify-center gap-6">
+          <div className="flex items-center gap-6">
             <button
               type="button"
-              onClick={() => {
-                setContactSent(false);
-                setContactError(null);
-                setActiveModal("contact");
-              }}
-              className="hover:text-white transition-colors cursor-pointer"
+              onClick={openContactModal}
+              className="transition-colors hover:text-white focus-visible:outline-none focus-visible:underline cursor-pointer"
             >
-              Contact & Marketing
+              Contact & Partnerships
             </button>
             <button
               type="button"
               onClick={() => setActiveModal("privacy")}
-              className="hover:text-white transition-colors cursor-pointer"
+              className="transition-colors hover:text-white focus-visible:outline-none focus-visible:underline cursor-pointer"
             >
               Privacy Policy
             </button>
-            <span className="font-mono text-[11px] text-neutral-400">
-              Move cursor or tap to ripple
-            </span>
           </div>
         </footer>
       </div>
 
-      {/* ================================================================== */}
-      {/* MODAL 1: CONTACT FOR MARKETING & INQUIRIES                         */}
-      {/* ================================================================== */}
+      {/* ================================================================= */}
+      {/* MODAL 1: CONTACT & PARTNERSHIPS                                   */}
+      {/* ================================================================= */}
       {activeModal === "contact" && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-lg animate-fadeIn">
-          <div className="relative w-full max-w-lg rounded-3xl border border-white/15 bg-[#07090e]/95 p-6 sm:p-8 text-left shadow-2xl backdrop-blur-3xl">
-            <div className="flex items-center justify-between border-b border-white/10 pb-4">
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="contact-modal-title"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setActiveModal("none");
+          }}
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm"
+        >
+          <div className="relative max-h-[90dvh] w-full max-w-md overflow-y-auto rounded-2xl border border-white/10 bg-[#0B0D11] p-6 text-left shadow-2xl sm:p-7">
+            <div className="flex items-start justify-between gap-4 border-b border-white/[0.08] pb-4">
               <div>
-                <span className="text-[10px] font-bold uppercase tracking-widest text-cyan-400">
-                  Secure Channel
-                </span>
-                <h2 className="text-xl font-bold text-white">Contact & Partnerships</h2>
+                <h2
+                  id="contact-modal-title"
+                  className="text-lg font-semibold text-white"
+                >
+                  Contact us
+                </h2>
+                <p className="mt-0.5 text-xs text-neutral-400">
+                  Partnerships, press, or general questions.
+                </p>
               </div>
               <button
                 type="button"
+                aria-label="Close dialog"
                 onClick={() => setActiveModal("none")}
-                className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-neutral-300 hover:bg-white/15 hover:text-white cursor-pointer"
+                className="rounded-lg p-1.5 text-neutral-400 transition-colors hover:bg-white/[0.06] hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-lime-300 cursor-pointer"
               >
-                ✕ Close
+                ✕
               </button>
             </div>
 
-            {!contactSent ? (
-              <form onSubmit={handleContactSubmit} className="mt-6 space-y-4">
+            {contactState.status !== "success" ? (
+              <form onSubmit={handleContactSubmit} className="mt-5 space-y-4">
                 <div>
-                  <label className="block text-xs font-medium text-neutral-300 mb-2">
-                    Inquiry Category
+                  <label className="mb-2 block text-xs font-medium text-neutral-300">
+                    Topic
                   </label>
                   <div className="grid grid-cols-3 gap-2">
-                    {[
-                      { id: "marketing", label: "Marketing" },
-                      { id: "updates", label: "Updates" },
-                      { id: "press", label: "Press" },
-                    ].map((tab) => (
+                    {(
+                      [
+                        { id: "marketing", label: "Marketing" },
+                        { id: "updates", label: "Product" },
+                        { id: "press", label: "Press" },
+                      ] as const
+                    ).map((tab) => (
                       <button
                         type="button"
                         key={tab.id}
-                        onClick={() => setContactType(tab.id as "marketing" | "updates" | "press")}
-                        className={`rounded-xl border px-3 py-2 text-xs font-medium transition-all cursor-pointer ${
+                        onClick={() => setContactType(tab.id)}
+                        className={`rounded-lg border px-3 py-2 text-xs font-medium transition-colors cursor-pointer ${
                           contactType === tab.id
-                            ? "border-lime-400/60 bg-lime-400/10 text-lime-300"
+                            ? "border-lime-300/60 bg-lime-300/10 text-lime-300"
                             : "border-white/10 bg-white/[0.02] text-neutral-400 hover:text-white"
                         }`}
                       >
@@ -441,62 +476,84 @@ export default function DownPrelaunchPage() {
                 </div>
 
                 <div>
-                  <label className="block text-xs font-medium text-neutral-300 mb-1.5">
-                    Your Email Address
+                  <label
+                    htmlFor="contact-email"
+                    className="mb-1.5 block text-xs font-medium text-neutral-300"
+                  >
+                    Your email
                   </label>
                   <input
+                    id="contact-email"
                     type="email"
                     required
+                    autoComplete="email"
+                    spellCheck={false}
                     value={contactEmail}
                     onChange={(e) => setContactEmail(e.target.value)}
                     placeholder="you@domain.com"
-                    className="w-full rounded-xl border border-white/15 bg-white/[0.03] px-4 py-3 text-sm text-white placeholder-neutral-500 focus:border-cyan-400 focus:outline-none"
+                    className="w-full rounded-xl border border-white/15 bg-white/[0.03] px-3.5 py-2.5 text-base text-white placeholder:text-neutral-500 focus:border-lime-300 focus:outline-none sm:text-sm"
                   />
                 </div>
 
                 <div>
-                  <label className="block text-xs font-medium text-neutral-300 mb-1.5">
+                  <label
+                    htmlFor="contact-message"
+                    className="mb-1.5 block text-xs font-medium text-neutral-300"
+                  >
                     Message
                   </label>
                   <textarea
+                    id="contact-message"
                     rows={4}
                     required
                     value={contactMessage}
                     onChange={(e) => setContactMessage(e.target.value)}
-                    placeholder="Detail your inquiry, partnership proposition, or marketing question..."
-                    className="w-full rounded-xl border border-white/15 bg-white/[0.03] px-4 py-3 text-sm text-white placeholder-neutral-500 focus:border-cyan-400 focus:outline-none"
+                    placeholder="How can we help?"
+                    className="w-full rounded-xl border border-white/15 bg-white/[0.03] px-3.5 py-2.5 text-base text-white placeholder:text-neutral-500 focus:border-lime-300 focus:outline-none sm:text-sm"
                   />
                 </div>
 
-                {contactError && (
-                  <p className="text-xs font-medium text-rose-400">{contactError}</p>
+                {contactState.status === "error" && (
+                  <p role="alert" className="text-xs font-medium text-rose-400">
+                    {contactState.message}
+                  </p>
                 )}
 
                 <div className="flex items-center justify-between pt-2">
-                  <span className="text-[11px] text-neutral-400">
-                    Direct: <strong className="text-neutral-200">marketing@down.social</strong>
+                  <span className="text-xs text-neutral-400">
+                    Or email{" "}
+                    <a
+                      href="mailto:marketing@down.social"
+                      className="text-neutral-200 underline decoration-white/30 underline-offset-4 hover:text-white"
+                    >
+                      marketing@down.social
+                    </a>
                   </span>
                   <button
                     type="submit"
-                    disabled={isSendingContact}
-                    className="rounded-full bg-gradient-to-r from-lime-300 via-cyan-400 to-indigo-500 px-6 py-2.5 text-xs font-bold text-black hover:opacity-90 active:scale-95 disabled:opacity-50 cursor-pointer"
+                    disabled={contactState.status === "submitting"}
+                    className="rounded-lg bg-lime-300 px-5 py-2.5 text-xs font-semibold text-black transition-colors hover:bg-lime-200 disabled:opacity-50 cursor-pointer"
                   >
-                    {isSendingContact ? "Transmitting..." : "Send Message →"}
+                    {contactState.status === "submitting"
+                      ? "Sending…"
+                      : "Send message"}
                   </button>
                 </div>
               </form>
             ) : (
-              <div className="my-6 rounded-2xl border border-lime-400/30 bg-lime-400/10 p-6 text-center">
-                <p className="text-base font-bold text-lime-300">Message Dispatched</p>
-                <p className="mt-1.5 text-xs text-neutral-300">
-                  Your message has been securely recorded. Our team will review and follow up promptly.
+              <div role="status" className="my-6 text-center">
+                <p className="text-base font-semibold text-white">
+                  Message sent
+                </p>
+                <p className="mt-1.5 text-xs text-neutral-400">
+                  Thanks for reaching out. Our team will get back to you shortly.
                 </p>
                 <button
                   type="button"
                   onClick={() => setActiveModal("none")}
-                  className="mt-4 rounded-full bg-white/10 px-5 py-2 text-xs font-medium text-white hover:bg-white/20 cursor-pointer"
+                  className="mt-5 rounded-lg border border-white/15 bg-white/[0.05] px-4 py-2 text-xs font-medium text-white hover:bg-white/10 cursor-pointer"
                 >
-                  Return to Site
+                  Close
                 </button>
               </div>
             )}
@@ -504,74 +561,109 @@ export default function DownPrelaunchPage() {
         </div>
       )}
 
-      {/* ================================================================== */}
-      {/* MODAL 2: PRIVACY & COMMUNICATIONS POLICY                           */}
-      {/* ================================================================== */}
+      {/* ================================================================= */}
+      {/* MODAL 2: PRIVACY POLICY                                           */}
+      {/* ================================================================= */}
       {activeModal === "privacy" && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-lg">
-          <div className="relative max-h-[85vh] w-full max-w-xl overflow-y-auto rounded-3xl border border-white/15 bg-[#07090e]/95 p-6 sm:p-8 text-left shadow-2xl backdrop-blur-3xl">
-            <div className="flex items-center justify-between border-b border-white/10 pb-4">
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="privacy-modal-title"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setActiveModal("none");
+          }}
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm"
+        >
+          <div className="relative max-h-[85dvh] w-full max-w-lg overflow-y-auto rounded-2xl border border-white/10 bg-[#0B0D11] p-6 text-left shadow-2xl sm:p-7">
+            <div className="flex items-start justify-between gap-4 border-b border-white/[0.08] pb-4">
               <div>
-                <span className="text-[10px] font-bold uppercase tracking-widest text-lime-300">
-                  Data Governance
-                </span>
-                <h2 className="text-xl font-bold text-white">Privacy & Email Policy</h2>
+                <h2
+                  id="privacy-modal-title"
+                  className="text-lg font-semibold text-white"
+                >
+                  Privacy Policy
+                </h2>
+                <p className="mt-0.5 text-xs text-neutral-400">
+                  How we handle pre-launch waitlist and contact data.
+                </p>
               </div>
               <button
                 type="button"
+                aria-label="Close dialog"
                 onClick={() => setActiveModal("none")}
-                className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-neutral-300 hover:bg-white/15 hover:text-white cursor-pointer"
+                className="rounded-lg p-1.5 text-neutral-400 transition-colors hover:bg-white/[0.06] hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-lime-300 cursor-pointer"
               >
-                ✕ Close
+                ✕
               </button>
             </div>
 
             <div className="mt-5 space-y-4 text-xs sm:text-sm leading-relaxed text-neutral-300">
               <div>
-                <h3 className="font-semibold text-white">1. Pre-Launch Data Collection</h3>
+                <h3 className="font-semibold text-white">
+                  1. What we collect
+                </h3>
                 <p className="mt-1 text-neutral-400">
-                  Leading up to our public release on <strong>25 November 2026</strong>, <strong>down.</strong> collects only your email address and communication preferences when you subscribe or submit inquiries.
+                  Ahead of our launch on{" "}
+                  <strong className="font-medium text-neutral-200">
+                    25 November 2026
+                  </strong>
+                  , <strong className="font-medium text-neutral-200">down.</strong>{" "}
+                  collects only your email address and notification preferences when you join the waitlist or contact us.
                 </p>
               </div>
 
               <div>
-                <h3 className="font-semibold text-white">2. Marketing & Milestone Notifications</h3>
+                <h3 className="font-semibold text-white">
+                  2. How we use your email
+                </h3>
                 <p className="mt-1 text-neutral-400">
-                  Your email is securely stored via Supabase Row-Level Security exclusively to dispatch:
+                  We use your email solely to send:
                 </p>
                 <ul className="mt-1.5 list-disc space-y-1 pl-5 text-neutral-400">
-                  <li>Username registration access on <strong className="text-white">11 November 2026</strong>.</li>
-                  <li>Platform launch access on <strong className="text-white">25 November 2026</strong>.</li>
-                  <li>Curated product updates and marketing announcements (when opted in).</li>
+                  <li>
+                    Your username registration invite on{" "}
+                    <strong className="font-medium text-neutral-200">
+                      11 November 2026
+                    </strong>
+                    .
+                  </li>
+                  <li>
+                    Our official launch announcement on{" "}
+                    <strong className="font-medium text-neutral-200">
+                      25 November 2026
+                    </strong>
+                    .
+                  </li>
+                  <li>
+                    Occasional product updates if you opted in.
+                  </li>
                 </ul>
               </div>
 
               <div>
-                <h3 className="font-semibold text-white">3. Zero Third-Party Sharing</h3>
+                <h3 className="font-semibold text-white">
+                  3. No third-party sharing
+                </h3>
                 <p className="mt-1 text-neutral-400">
-                  We never sell or distribute your email data. Every communication includes an immediate unsubscribe option, or you can request complete erasure via our Contact channel.
+                  We never sell or rent your personal information. Every email includes a one-click unsubscribe link, or you can contact us anytime to permanently delete your data.
                 </p>
               </div>
             </div>
 
-            <div className="mt-6 flex items-center justify-between border-t border-white/10 pt-4">
+            <div className="mt-6 flex items-center justify-between border-t border-white/[0.08] pt-4">
               <button
                 type="button"
-                onClick={() => {
-                  setContactSent(false);
-                  setContactError(null);
-                  setActiveModal("contact");
-                }}
-                className="text-xs font-medium text-cyan-400 hover:underline cursor-pointer"
+                onClick={openContactModal}
+                className="text-xs font-medium text-lime-300 hover:underline cursor-pointer"
               >
-                Questions regarding data? Contact us →
+                Have a privacy question? Contact us →
               </button>
               <button
                 type="button"
                 onClick={() => setActiveModal("none")}
-                className="rounded-full bg-white/10 px-5 py-2 text-xs font-semibold text-white hover:bg-white/20 cursor-pointer"
+                className="rounded-lg border border-white/15 bg-white/[0.05] px-4 py-2 text-xs font-medium text-white hover:bg-white/10 cursor-pointer"
               >
-                Understood
+                Done
               </button>
             </div>
           </div>
