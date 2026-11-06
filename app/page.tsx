@@ -1,9 +1,9 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { supabase } from "@/lib/supabase";
 
-// Target timestamps (IST / UTC+05:30)
+// Milestones (IST / UTC+05:30)
 const USERNAME_OPEN_DATE = new Date("2026-11-11T00:00:00+05:30").getTime();
 const LAUNCH_DATE = new Date("2026-11-25T00:00:00+05:30").getTime();
 
@@ -13,7 +13,7 @@ type ContactCategory = "marketing" | "updates" | "press";
 type WaitlistSubmissionState =
   | { status: "idle" }
   | { status: "submitting" }
-  | { status: "success"; duplicate: boolean }
+  | { status: "success"; duplicate: boolean; passCode: string }
   | { status: "error"; message: string };
 
 type ContactSubmissionState =
@@ -22,18 +22,20 @@ type ContactSubmissionState =
   | { status: "success" }
   | { status: "error"; message: string };
 
-interface TimeState {
+interface TimeSnapshot {
   days: string;
   hours: string;
   minutes: string;
   seconds: string;
+  rawSeconds: number;
   usernameDaysLeft: number;
-  istClock: string;
+  istFormatted: string;
 }
 
 const DIGITS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+const SIXTY_TICKS = Array.from({ length: 60 }, (_, i) => i);
 
-function computeTimeState(): TimeState {
+function getSnapshot(): TimeSnapshot {
   const now = Date.now();
   const diffLaunch = Math.max(0, LAUNCH_DATE - now);
 
@@ -45,7 +47,7 @@ function computeTimeState(): TimeState {
   const diffUsername = Math.max(0, USERNAME_OPEN_DATE - now);
   const usernameDaysLeft = Math.ceil(diffUsername / 86_400_000);
 
-  const istClock = new Intl.DateTimeFormat("en-GB", {
+  const istFormatted = new Intl.DateTimeFormat("en-GB", {
     timeZone: "Asia/Kolkata",
     hour: "2-digit",
     minute: "2-digit",
@@ -58,41 +60,78 @@ function computeTimeState(): TimeState {
     hours: String(h).padStart(2, "0"),
     minutes: String(m).padStart(2, "0"),
     seconds: String(s).padStart(2, "0"),
+    rawSeconds: s,
     usernameDaysLeft,
-    istClock,
+    istFormatted,
   };
 }
 
-/**
- * Single mechanical vertical reel digit (0-9).
- * Uses percentage-based vertical translation so it scales cleanly at any clamp() font size.
- */
-function RollingDigit({ char }: { char: string }) {
-  const numeric = Number.parseInt(char, 10);
-  const isDigit = !Number.isNaN(numeric) && numeric >= 0 && numeric <= 9;
+/** Deterministic pass serial from email address */
+function generatePassSerial(email: string): string {
+  let hash = 2166136261;
+  for (let i = 0; i < email.length; i++) {
+    hash ^= email.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  const code = Math.abs(hash % 900000) + 100000;
+  return `DWN-${code}`;
+}
 
-  if (!isDigit) {
-    return (
-      <span className="inline-flex h-[1em] items-center justify-center">
-        {char}
-      </span>
-    );
+/** Downloads an .ics calendar event for the Nov 11 username drop */
+function downloadUsernameReminderIcs() {
+  const ics = [
+    "BEGIN:VCALENDAR",
+    "VERSION:2.0",
+    "PRODID:-//down.//Prelaunch//EN",
+    "BEGIN:VEVENT",
+    "DTSTART:20261110T183000Z",
+    "DTEND:20261110T193000Z",
+    "SUMMARY:down. — Claim Your Username",
+    "DESCRIPTION:Username reservation is now live for early-access waitlist members.",
+    "END:VEVENT",
+    "END:VCALENDAR",
+  ].join("\r\n");
+
+  const blob = new Blob([ics], { type: "text/calendar;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "down-username-claim.ics";
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+/**
+ * Optical drum digit with top/bottom vignette mask so numbers roll out of shadow.
+ */
+function DrumDigit({ char }: { char: string }) {
+  const n = Number.parseInt(char, 10);
+  const isNum = !Number.isNaN(n) && n >= 0 && n <= 9;
+
+  if (!isNum) {
+    return <span className="inline-flex h-[1.12em] items-center">{char}</span>;
   }
 
   return (
-    <span className="relative inline-block h-[1em] w-[0.62em] overflow-hidden align-bottom select-none">
+    <span
+      className="relative inline-block h-[1.12em] w-[0.61em] overflow-hidden align-bottom select-none"
+      style={{
+        maskImage:
+          "linear-gradient(to bottom, transparent 0%, #000 16%, #000 84%, transparent 100%)",
+        WebkitMaskImage:
+          "linear-gradient(to bottom, transparent 0%, #000 16%, #000 84%, transparent 100%)",
+      }}
+    >
       <span
         className="flex flex-col transition-transform duration-700 ease-[cubic-bezier(0.16,1,0.3,1)] motion-reduce:transition-none will-change-transform"
-        style={{
-          transform: `translate3d(0, -${numeric * 10}%, 0)`,
-        }}
+        style={{ transform: `translate3d(0, -${n * 10}%, 0)` }}
       >
-        {DIGITS.map((d) => (
+        {DIGITS.map((digit) => (
           <span
-            key={d}
-            className="flex h-[1em] items-center justify-center leading-none"
+            key={digit}
+            className="flex h-[1.12em] items-center justify-center leading-none"
           >
-            {d}
+            {digit}
           </span>
         ))}
       </span>
@@ -100,145 +139,209 @@ function RollingDigit({ char }: { char: string }) {
   );
 }
 
-function RollingPair({ value }: { value: string }) {
-  const chars = value.split("");
+function DrumPair({ value }: { value: string }) {
   return (
-    <span className="inline-flex items-center tracking-[-0.04em] tabular-nums">
-      {chars.map((char, index) => (
-        <RollingDigit key={index} char={char} />
+    <span className="inline-flex items-center tracking-[-0.045em] tabular-nums">
+      {value.split("").map((ch, idx) => (
+        <DrumDigit key={idx} char={ch} />
       ))}
     </span>
   );
 }
 
 /**
- * Architectural Horology Centerpiece.
- * Isolates the 1-second timer so the rest of the page never re-renders.
+ * Double-bezel recessed horology centerpiece with a 60-second vernier tick scale.
  */
-function ArchitecturalClock() {
-  const [time, setTime] = useState<TimeState>({
+function MonumentalTimepiece() {
+  const [snap, setSnap] = useState<TimeSnapshot>({
     days: "00",
     hours: "00",
     minutes: "00",
     seconds: "00",
+    rawSeconds: 0,
     usernameDaysLeft: 5,
-    istClock: "--:--:--",
+    istFormatted: "--:--:--",
   });
   const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
-    // Trigger initial roll-in animation shortly after mount
-    const initialTimer = window.setTimeout(() => {
+    const boot = window.setTimeout(() => {
       setMounted(true);
-      setTime(computeTimeState());
-    }, 40);
+      setSnap(getSnapshot());
+    }, 35);
 
-    const interval = window.setInterval(() => {
-      setTime(computeTimeState());
+    const timer = window.setInterval(() => {
+      setSnap(getSnapshot());
     }, 1000);
 
     return () => {
-      window.clearTimeout(initialTimer);
-      window.clearInterval(interval);
+      window.clearTimeout(boot);
+      window.clearInterval(timer);
     };
   }, []);
 
-  const cells = [
-    { index: "01", label: "DAYS", value: time.days },
-    { index: "02", label: "HOURS", value: time.hours },
-    { index: "03", label: "MINUTES", value: time.minutes },
-    { index: "04", label: "SECONDS", value: time.seconds, highlight: true },
+  const units = [
+    { label: "Days", code: "DD", value: snap.days },
+    { label: "Hours", code: "HH", value: snap.hours },
+    { label: "Minutes", code: "MM", value: snap.minutes },
+    { label: "Seconds", code: "SS", value: snap.seconds, isLive: true },
   ];
 
+  // Progress along the 60-second cycle (inverted from countdown second)
+  const activeTickIndex = mounted ? (60 - snap.rawSeconds) % 60 : 0;
+
   return (
-    <section aria-label="Launch countdown" className="w-full">
-      {/* Sub-header telemetry bar */}
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/[0.08] px-5 py-2.5 font-mono text-[11px] tracking-[0.08em] text-[#7A7A75] uppercase sm:px-10">
-        <div className="flex items-center gap-2.5">
-          <span className="relative flex h-1.5 w-1.5">
-            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[#D9FF54] opacity-75" />
-            <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-[#D9FF54]" />
-          </span>
-          <span className="text-[#EDEDEA]">Countdown to Public Release</span>
-        </div>
-        <div className="flex items-center gap-4">
-          <span>IST {mounted ? time.istClock : "--:--:--"}</span>
-          <span className="hidden text-white/20 sm:inline">/</span>
-          <span className="hidden sm:inline">25.11.2026</span>
-        </div>
-      </div>
+    <section aria-label="Time remaining until launch" className="w-full">
+      {/* Outer machined bezel */}
+      <div className="rounded-[28px] border border-white/[0.07] bg-white/[0.02] p-1.5 shadow-[0_32px_90px_-20px_rgba(0,0,0,0.95)] sm:rounded-[34px] sm:p-2">
+        {/* Inner instrument housing */}
+        <div className="relative overflow-hidden rounded-[22px] border border-white/[0.08] bg-[#090A0D] sm:rounded-[26px]">
+          {/* Specular top highlight */}
+          <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-white/30 to-transparent" />
 
-      {/* Monumental 4-Column Timepiece */}
-      <div className="grid grid-cols-2 divide-y divide-white/[0.08] border-b border-white/[0.08] lg:grid-cols-4 lg:divide-x lg:divide-y-0">
-        {cells.map((cell, i) => (
-          <div
-            key={cell.label}
-            className={`group relative flex flex-col justify-between px-5 py-7 sm:px-10 sm:py-12 ${
-              i % 2 === 1 ? "border-l border-white/[0.08] lg:border-l-0" : ""
-            }`}
-          >
-            {/* Top cell metadata */}
-            <div className="flex items-center justify-between font-mono text-[11px] tracking-[0.14em] text-[#7A7A75]">
-              <span>[{cell.index}]</span>
-              <span
-                className={
-                  cell.highlight ? "text-[#D9FF54]" : "text-[#7A7A75]"
-                }
+          {/* Instrument Top Status Bar */}
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/[0.06] bg-white/[0.01] px-5 py-3 text-[11px] text-zinc-400 sm:px-7">
+            <div className="flex items-center gap-2.5">
+              <span className="relative flex h-2 w-2">
+                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[#D8FF5B] opacity-75" />
+                <span className="relative inline-flex h-2 w-2 rounded-full bg-[#D8FF5B]" />
+              </span>
+              <span className="font-medium tracking-tight text-zinc-200">
+                Global Release Countdown
+              </span>
+            </div>
+
+            <div className="flex items-center gap-3 font-mono text-[11px] text-zinc-500">
+              <span>IST {mounted ? snap.istFormatted : "--:--:--"}</span>
+              <span className="text-white/15">•</span>
+              <span className="text-zinc-300">25 Nov 2026</span>
+            </div>
+          </div>
+
+          {/* 4 Recessed Odometer Drums */}
+          <div className="grid grid-cols-2 gap-px bg-white/[0.06] lg:grid-cols-4">
+            {units.map((unit) => (
+              <div
+                key={unit.label}
+                className="relative flex flex-col justify-between bg-[#090A0D] px-5 py-6 sm:px-8 sm:py-9"
               >
-                {cell.label}
-              </span>
-            </div>
+                {/* Subtle inner vignette */}
+                <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_50%_50%,rgba(255,255,255,0.02),transparent_75%)]" />
 
-            {/* Giant Rolling Numerals */}
+                <div className="relative z-10 flex items-center justify-between">
+                  <span className="text-xs font-medium tracking-tight text-zinc-400">
+                    {unit.label}
+                  </span>
+                  <span
+                    className={`rounded px-1.5 py-0.5 font-mono text-[10px] tracking-wider ${
+                      unit.isLive
+                        ? "bg-[#D8FF5B]/15 text-[#D8FF5B]"
+                        : "bg-white/[0.04] text-zinc-500"
+                    }`}
+                  >
+                    {unit.code}
+                  </span>
+                </div>
+
+                {/* Recessed Drum Well */}
+                <div className="relative my-3 flex items-center justify-center rounded-2xl border border-white/[0.05] bg-[#050608] py-4 shadow-[inset_0_4px_20px_rgba(0,0,0,0.85)] sm:my-5 sm:py-6">
+                  {/* Horizontal mechanical split line */}
+                  <div className="pointer-events-none absolute inset-x-0 top-1/2 h-px bg-white/[0.04]" />
+
+                  <div
+                    className={`font-mono text-[clamp(3.25rem,8.5vw,6.75rem)] font-semibold leading-none ${
+                      unit.isLive ? "text-[#D8FF5B]" : "text-[#F4F4F0]"
+                    }`}
+                  >
+                    <DrumPair value={unit.value} />
+                  </div>
+                </div>
+
+                {/* Bottom micro-caption */}
+                <div className="relative z-10 flex items-center justify-between font-mono text-[10px] text-zinc-500">
+                  <span>{unit.isLive ? "1000ms cycle" : "Locked"}</span>
+                  <span
+                    className={`h-1 w-1 rounded-full ${
+                      unit.isLive ? "bg-[#D8FF5B]" : "bg-white/20"
+                    }`}
+                  />
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {/* 60-Second Vernier Scale + Milestone Strip */}
+          <div className="border-t border-white/[0.06] bg-[#07080A] px-5 py-4 sm:px-7">
+            {/* 60-Tick Precision Bar */}
             <div
-              className={`my-6 flex items-baseline justify-start font-mono text-[clamp(4.25rem,12vw,9.25rem)] font-medium leading-none tracking-[-0.05em] sm:my-8 ${
-                cell.highlight ? "text-[#D9FF54]" : "text-[#EDEDEA]"
-              }`}
+              aria-hidden="true"
+              className="mb-4 grid grid-cols-60 gap-[2px] sm:gap-1"
+              style={{
+                gridTemplateColumns: "repeat(60, minmax(0, 1fr))",
+              }}
             >
-              <RollingPair value={cell.value} />
+              {SIXTY_TICKS.map((t) => {
+                const isMajor = t % 5 === 0;
+                const isLit = mounted && t <= activeTickIndex;
+                const isHead = mounted && t === activeTickIndex;
+                return (
+                  <span
+                    key={t}
+                    className={`rounded-full transition-colors duration-300 ${
+                      isMajor ? "h-2.5" : "h-1.5 self-center"
+                    } ${
+                      isHead
+                        ? "bg-[#D8FF5B] shadow-[0_0_8px_#D8FF5B]"
+                        : isLit
+                          ? "bg-[#D8FF5B]/55"
+                          : "bg-white/[0.08]"
+                    }`}
+                  />
+                );
+              })}
             </div>
 
-            {/* Bottom tick rule */}
-            <div className="flex items-center justify-between border-t border-white/[0.06] pt-3 font-mono text-[10px] tracking-[0.12em] text-[#565652] uppercase">
-              <span>UNIT // {cell.label.slice(0, 3)}</span>
-              <span>{cell.highlight ? "LIVE TICK" : "SYNCED"}</span>
+            {/* Two-Stage Milestone Footer */}
+            <div className="flex flex-col items-start justify-between gap-3 pt-1 text-xs sm:flex-row sm:items-center">
+              <div className="flex flex-wrap items-center gap-2.5">
+                <span className="inline-flex items-center gap-1.5 rounded-full border border-[#D8FF5B]/30 bg-[#D8FF5B]/10 px-2.5 py-0.5 font-mono text-[11px] font-medium text-[#D8FF5B]">
+                  <span className="h-1.5 w-1.5 rounded-full bg-[#D8FF5B]" />
+                  Milestone 01
+                </span>
+                <span className="text-zinc-300">
+                  Username reservation opens{" "}
+                  <strong className="font-semibold text-white">
+                    11 November
+                  </strong>
+                </span>
+                {mounted && snap.usernameDaysLeft > 0 && (
+                  <span className="font-mono text-[11px] text-zinc-500">
+                    ({snap.usernameDaysLeft} days away)
+                  </span>
+                )}
+              </div>
+
+              <div className="flex items-center gap-2 text-zinc-400">
+                <span className="rounded-full border border-white/10 bg-white/[0.03] px-2.5 py-0.5 font-mono text-[11px] text-zinc-400">
+                  Milestone 02
+                </span>
+                <span>
+                  iOS & Android launch{" "}
+                  <strong className="font-semibold text-zinc-200">
+                    25 November
+                  </strong>
+                </span>
+              </div>
             </div>
           </div>
-        ))}
-      </div>
-
-      {/* Two-Phase Schedule Ledger */}
-      <div className="grid grid-cols-1 divide-y divide-white/[0.08] border-b border-white/[0.08] bg-white/[0.01] font-mono text-xs sm:grid-cols-2 sm:divide-x sm:divide-y-0">
-        <div className="flex items-center justify-between px-5 py-3.5 sm:px-10">
-          <div className="flex items-center gap-3">
-            <span className="inline-block h-1.5 w-1.5 bg-[#D9FF54]" />
-            <span className="text-[#7A7A75]">PHASE 01</span>
-            <span className="text-[#EDEDEA]">Username Reservation</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="text-[#EDEDEA]">11 NOV</span>
-            {mounted && time.usernameDaysLeft > 0 && (
-              <span className="border border-[#D9FF54]/30 bg-[#D9FF54]/10 px-1.5 py-0.5 text-[10px] text-[#D9FF54]">
-                T-{time.usernameDaysLeft}D
-              </span>
-            )}
-          </div>
-        </div>
-
-        <div className="flex items-center justify-between px-5 py-3.5 sm:px-10">
-          <div className="flex items-center gap-3">
-            <span className="inline-block h-1.5 w-1.5 bg-white/30" />
-            <span className="text-[#7A7A75]">PHASE 02</span>
-            <span className="text-[#EDEDEA]">Global App Launch</span>
-          </div>
-          <span className="text-[#7A7A75]">25 NOV 2026</span>
         </div>
       </div>
     </section>
   );
 }
-
 export default function DownPrelaunchPage() {
+  const emailInputRef = useRef<HTMLInputElement>(null);
+
   // Waitlist state
   const [email, setEmail] = useState("");
   const [marketingOptIn, setMarketingOptIn] = useState(true);
@@ -255,21 +358,38 @@ export default function DownPrelaunchPage() {
     status: "idle",
   });
 
-  // Lock background scroll & bind Escape key when a modal is open
+  // Press "/" anywhere to focus the waitlist email input
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (
+        e.key === "/" &&
+        activeModal === "none" &&
+        document.activeElement?.tagName !== "INPUT" &&
+        document.activeElement?.tagName !== "TEXTAREA"
+      ) {
+        e.preventDefault();
+        emailInputRef.current?.focus();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [activeModal]);
+
+  // Lock scroll & bind Escape when modal is open
   useEffect(() => {
     if (activeModal === "none") return;
 
-    const previousOverflow = document.body.style.overflow;
+    const prevOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
 
-    const handleKeyDown = (e: KeyboardEvent) => {
+    const handleEsc = (e: KeyboardEvent) => {
       if (e.key === "Escape") setActiveModal("none");
     };
 
-    window.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("keydown", handleEsc);
     return () => {
-      document.body.style.overflow = previousOverflow;
-      window.removeEventListener("keydown", handleKeyDown);
+      document.body.style.overflow = prevOverflow;
+      window.removeEventListener("keydown", handleEsc);
     };
   }, [activeModal]);
 
@@ -285,23 +405,24 @@ export default function DownPrelaunchPage() {
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
       setWaitlistState({
         status: "error",
-        message: "Enter a valid email address.",
+        message: "Please enter a valid email address.",
       });
       return;
     }
 
     setWaitlistState({ status: "submitting" });
+    const passCode = generatePassSerial(cleanEmail);
 
     try {
       let { error } = await supabase.from("waitlist_subscribers").insert([
         {
           email: cleanEmail,
           marketing_opt_in: marketingOptIn,
-          source: "down_prelaunch_2026_v3",
+          source: "down_prelaunch_2026_final",
         },
       ]);
 
-      // Fallback if table only has `email` column
+      // Resilient fallback if optional columns do not exist in DB
       if (
         error &&
         error.code !== "23505" &&
@@ -322,20 +443,20 @@ export default function DownPrelaunchPage() {
           error.message?.toLowerCase().includes("unique");
 
         if (isDuplicate) {
-          setWaitlistState({ status: "success", duplicate: true });
+          setWaitlistState({ status: "success", duplicate: true, passCode });
         } else {
           setWaitlistState({
             status: "error",
-            message: "Request failed. Please try again shortly.",
+            message: "Could not complete registration. Please try again.",
           });
         }
       } else {
-        setWaitlistState({ status: "success", duplicate: false });
+        setWaitlistState({ status: "success", duplicate: false, passCode });
       }
     } catch {
       setWaitlistState({
         status: "error",
-        message: "Network error. Check your connection.",
+        message: "Connection error. Please check your internet and try again.",
       });
     }
   };
@@ -348,7 +469,7 @@ export default function DownPrelaunchPage() {
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail) || !cleanMessage) {
       setContactState({
         status: "error",
-        message: "Provide both a valid email and message.",
+        message: "Please enter both a valid email and a message.",
       });
       return;
     }
@@ -367,7 +488,7 @@ export default function DownPrelaunchPage() {
       if (error) {
         setContactState({
           status: "error",
-          message: "Could not send message. Try again.",
+          message: "Unable to send right now. Please try again.",
         });
       } else {
         setContactState({ status: "success" });
@@ -377,225 +498,316 @@ export default function DownPrelaunchPage() {
     } catch {
       setContactState({
         status: "error",
-        message: "Network error. Check your connection.",
+        message: "Connection error. Please check your network.",
       });
     }
   };
 
   return (
-    <div className="relative min-h-dvh w-full bg-[#080808] font-sans text-[#EDEDEA] antialiased selection:bg-[#D9FF54] selection:text-black">
+    <div className="relative min-h-dvh w-full overflow-x-hidden bg-[#060709] font-sans text-[#F4F4F0] antialiased selection:bg-[#D8FF5B] selection:text-black">
       {/* Keep browser autofill strictly dark */}
       <style>{`
         input:-webkit-autofill,
         input:-webkit-autofill:hover,
         input:-webkit-autofill:focus,
         textarea:-webkit-autofill {
-          -webkit-text-fill-color: #EDEDEA !important;
-          -webkit-box-shadow: 0 0 0px 1000px #0C0C0C inset !important;
+          -webkit-text-fill-color: #F4F4F0 !important;
+          -webkit-box-shadow: 0 0 0px 1000px #0B0C10 inset !important;
           transition: background-color 500000s ease-in-out 0s !important;
-          caret-color: #D9FF54 !important;
+          caret-color: #D8FF5B !important;
         }
       `}</style>
 
-      {/* Subtle static anodized film grain (zero cheap moving shaders) */}
+      {/* Ambient overhead studio light + subtle anodized grain */}
       <div
         aria-hidden="true"
-        className="pointer-events-none fixed inset-0 z-0 opacity-[0.025]"
-        style={{
-          backgroundImage: `url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E")`,
-        }}
-      />
+        className="pointer-events-none fixed inset-0 z-0"
+      >
+        <div
+          className="absolute inset-x-0 -top-40 h-[480px]"
+          style={{
+            background:
+              "radial-gradient(55% 50% at 50% 0%, rgba(216, 255, 91, 0.065) 0%, rgba(255, 255, 255, 0.02) 50%, transparent 100%)",
+          }}
+        />
+        <div
+          className="absolute inset-0 opacity-[0.02]"
+          style={{
+            backgroundImage: `url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E")`,
+          }}
+        />
+      </div>
 
-      {/* Full-Viewport Architectural Frame */}
-      <div className="relative z-10 mx-auto flex min-h-dvh max-w-[1440px] flex-col justify-between border-x border-white/[0.08]">
-        {/* Top Structural Bar */}
-        <header className="flex items-center justify-between border-b border-white/[0.08] px-5 py-5 sm:px-10">
+      {/* Main Layout */}
+      <div className="relative z-10 mx-auto flex min-h-dvh w-full max-w-5xl flex-col justify-between px-5 sm:px-8">
+        {/* Minimalist Navigation */}
+        <header className="flex items-center justify-between py-6 sm:py-8">
           <a
             href="#top"
-            className="text-xl font-semibold tracking-[-0.04em] text-[#EDEDEA] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[#D9FF54]"
+            className="group inline-flex items-center gap-2 focus-visible:outline-none"
           >
-            down<span className="text-[#D9FF54]">.</span>
+            <span className="flex h-7 w-7 items-center justify-center rounded-lg border border-white/10 bg-white/[0.03] font-mono text-xs font-bold text-[#D8FF5B] transition-colors group-hover:border-[#D8FF5B]/40">
+              d.
+            </span>
+            <span className="text-lg font-semibold tracking-[-0.03em] text-white">
+              down<span className="text-[#D8FF5B]">.</span>
+            </span>
           </a>
 
-          <div className="hidden items-center gap-2 font-mono text-[11px] tracking-[0.12em] text-[#7A7A75] uppercase md:flex">
-            <span>SOCIAL UTILITY</span>
-            <span className="text-white/20">//</span>
-            <span>PRE-RELEASE BUILD</span>
-          </div>
-
-          <nav className="flex items-center gap-6 font-mono text-xs tracking-[0.06em] text-[#7A7A75] uppercase">
+          <nav className="flex items-center gap-1 sm:gap-2">
             <button
               type="button"
               onClick={openContactModal}
-              className="transition-colors hover:text-[#EDEDEA] focus-visible:text-[#EDEDEA] focus-visible:outline-none cursor-pointer"
+              className="rounded-lg px-3 py-1.5 text-xs font-medium text-zinc-400 transition-colors hover:bg-white/[0.04] hover:text-white cursor-pointer"
             >
               Inquiries
             </button>
             <button
               type="button"
               onClick={() => setActiveModal("privacy")}
-              className="transition-colors hover:text-[#EDEDEA] focus-visible:text-[#EDEDEA] focus-visible:outline-none cursor-pointer"
+              className="rounded-lg px-3 py-1.5 text-xs font-medium text-zinc-400 transition-colors hover:bg-white/[0.04] hover:text-white cursor-pointer"
             >
               Privacy
             </button>
           </nav>
         </header>
 
-        {/* Center Stage: Monumental Horology + Editorial Split */}
-        <main className="my-auto flex flex-col">
-          {/* 1. Giant Kinetic Countdown */}
-          <ArchitecturalClock />
-
-          {/* 2. Asymmetric Editorial Split: Manifesto (Left) + Waitlist Terminal (Right) */}
-          <div className="grid grid-cols-1 divide-y divide-white/[0.08] lg:grid-cols-12 lg:divide-x lg:divide-y-0">
-            {/* Left Column: Minimalist Positioning */}
-            <div className="flex flex-col justify-between px-5 py-10 sm:px-10 sm:py-14 lg:col-span-7">
-              <div className="font-mono text-[11px] tracking-[0.14em] text-[#7A7A75] uppercase">
-                [00] MANIFESTO
+        {/* Centerpiece Content */}
+        <main className="my-auto flex flex-col items-center py-6 sm:py-10">
+          {/* Focused Editorial Header */}
+          <div className="mb-8 flex w-full flex-col items-start justify-between gap-4 sm:mb-10 sm:flex-row sm:items-end">
+            <div>
+              <div className="mb-3 inline-flex items-center gap-2 rounded-full border border-white/[0.08] bg-white/[0.02] px-3 py-1 text-[11px] font-medium text-zinc-400">
+                <span className="h-1.5 w-1.5 rounded-full bg-[#D8FF5B]" />
+                <span>Private Social Utility · Pre-Release</span>
               </div>
-
-              <div className="mt-6 max-w-xl">
-                <h1 className="text-3xl font-medium tracking-[-0.035em] text-[#EDEDEA] sm:text-5xl leading-[1.08]">
-                  Real life, off the feed.
-                </h1>
-                <p className="mt-4 text-sm leading-relaxed text-[#8E8E88] sm:text-base">
-                  A private social utility for spontaneous plans with your
-                  actual friends. No public follower counts, no algorithmic
-                  performative feeds, and no noise.
-                </p>
-              </div>
+              <h1 className="text-3xl font-semibold tracking-[-0.04em] text-white sm:text-5xl leading-[1.06]">
+                Real life,{" "}
+                <span className="text-zinc-400">off the feed.</span>
+              </h1>
             </div>
 
-            {/* Right Column: Waitlist Access Terminal */}
-            <div className="flex flex-col justify-between bg-white/[0.01] px-5 py-10 sm:px-10 sm:py-14 lg:col-span-5">
-              <div className="flex items-center justify-between font-mono text-[11px] tracking-[0.14em] text-[#7A7A75] uppercase">
-                <span>[05] EARLY ACCESS QUEUE</span>
-                <span className="text-[#EDEDEA]">OPEN</span>
-              </div>
+            <p className="max-w-xs text-xs leading-relaxed text-zinc-400 sm:text-right sm:text-sm">
+              Spontaneous plans with your actual circle. No follower counts, no
+              public metrics, and no algorithmic noise.
+            </p>
+          </div>
 
-              <div className="mt-6">
-                {waitlistState.status !== "success" ? (
-                  <form
-                    onSubmit={handleEmailSubmit}
-                    noValidate
-                    className="space-y-4"
-                  >
-                    <div>
+          {/* 1. The Monumental Horology Centerpiece */}
+          <MonumentalTimepiece />
+
+          {/* 2. Double-Bezel Waitlist Command Bar / Early-Access Pass */}
+          <div className="mt-6 w-full">
+            {waitlistState.status !== "success" ? (
+              <form
+                onSubmit={handleEmailSubmit}
+                noValidate
+                className="rounded-[24px] border border-white/[0.07] bg-white/[0.02] p-1.5 sm:rounded-[28px] sm:p-2"
+              >
+                <div className="rounded-[18px] border border-white/[0.08] bg-[#0B0C10] p-4 sm:rounded-[22px] sm:p-5">
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+                    <div className="relative flex-1">
                       <label htmlFor="waitlist-email" className="sr-only">
                         Email address
                       </label>
-                      <div className="flex flex-col gap-2 sm:flex-row sm:items-stretch">
-                        <input
-                          id="waitlist-email"
-                          type="email"
-                          required
-                          autoComplete="email"
-                          spellCheck={false}
-                          value={email}
-                          onChange={(e) => {
-                            setEmail(e.target.value);
-                            if (waitlistState.status === "error") {
-                              setWaitlistState({ status: "idle" });
-                            }
-                          }}
-                          placeholder="name@domain.com"
-                          aria-invalid={waitlistState.status === "error"}
-                          aria-describedby={
-                            waitlistState.status === "error"
-                              ? "waitlist-error"
-                              : undefined
-                          }
-                          className="min-h-12 flex-1 border border-white/[0.14] bg-[#0C0C0C] px-4 py-3 font-mono text-base text-[#EDEDEA] placeholder:text-[#565652] focus:border-[#D9FF54] focus:outline-none sm:text-sm"
-                        />
-                        <button
-                          type="submit"
-                          disabled={waitlistState.status === "submitting"}
-                          className="min-h-12 shrink-0 bg-[#EDEDEA] px-6 py-3 font-mono text-xs font-semibold tracking-[0.1em] text-[#080808] uppercase transition-colors hover:bg-[#D9FF54] disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#D9FF54] cursor-pointer"
-                        >
-                          {waitlistState.status === "submitting"
-                            ? "Wait…"
-                            : "Reserve →"}
-                        </button>
-                      </div>
-                    </div>
-
-                    {waitlistState.status === "error" && (
-                      <p
-                        id="waitlist-error"
-                        role="alert"
-                        className="font-mono text-xs text-[#FF5A36]"
-                      >
-                        ! {waitlistState.message}
-                      </p>
-                    )}
-
-                    <label className="inline-flex items-center gap-2.5 text-xs text-[#7A7A75] cursor-pointer select-none hover:text-[#EDEDEA] transition-colors">
                       <input
-                        type="checkbox"
-                        checked={marketingOptIn}
-                        onChange={(e) => setMarketingOptIn(e.target.checked)}
-                        className="h-3.5 w-3.5 rounded-none border border-white/25 bg-transparent accent-[#D9FF54]"
+                        ref={emailInputRef}
+                        id="waitlist-email"
+                        type="email"
+                        required
+                        autoComplete="email"
+                        spellCheck={false}
+                        value={email}
+                        onChange={(e) => {
+                          setEmail(e.target.value);
+                          if (waitlistState.status === "error") {
+                            setWaitlistState({ status: "idle" });
+                          }
+                        }}
+                        placeholder="Enter your email to reserve early access…"
+                        aria-invalid={waitlistState.status === "error"}
+                        aria-describedby={
+                          waitlistState.status === "error"
+                            ? "waitlist-error"
+                            : undefined
+                        }
+                        className="h-12 w-full rounded-xl border border-white/[0.1] bg-[#07080A] pl-4 pr-14 text-base text-white placeholder:text-zinc-500 focus:border-[#D8FF5B]/70 focus:outline-none sm:text-sm"
                       />
-                      <span>
-                        Send me an invite when username claims open on 11 Nov
-                      </span>
-                    </label>
-                  </form>
-                ) : (
-                  <div
-                    role="status"
-                    className="border border-[#D9FF54]/30 bg-[#D9FF54]/[0.04] p-5"
-                  >
-                    <div className="flex items-center justify-between font-mono text-[11px] tracking-[0.12em] text-[#D9FF54] uppercase">
-                      <span>
-                        {waitlistState.duplicate
-                          ? "STATUS // ALREADY REGISTERED"
-                          : "STATUS // CONFIRMED"}
-                      </span>
-                      <span>[OK]</span>
+                      <kbd className="pointer-events-none absolute right-3.5 top-1/2 hidden -translate-y-1/2 rounded border border-white/10 bg-white/[0.04] px-1.5 py-0.5 font-mono text-[10px] text-zinc-500 sm:inline-block">
+                        /
+                      </kbd>
                     </div>
-                    <p className="mt-2 text-xs leading-relaxed text-[#A0A09A]">
-                      Dispatched reservation for{" "}
-                      <span className="font-mono text-[#EDEDEA]">
-                        {email.trim()}
+
+                    <button
+                      type="submit"
+                      disabled={waitlistState.status === "submitting"}
+                      className="inline-flex h-12 shrink-0 items-center justify-center gap-2 rounded-xl bg-[#D8FF5B] px-6 text-sm font-semibold text-black transition-all hover:bg-[#e2ff7d] active:scale-[0.99] disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#D8FF5B] cursor-pointer"
+                    >
+                      <span>
+                        {waitlistState.status === "submitting"
+                          ? "Reserving…"
+                          : "Reserve spot"}
                       </span>
-                      . You will receive your claim key prior to{" "}
-                      <strong className="font-normal text-[#EDEDEA]">
+                      <svg
+                        className="h-4 w-4"
+                         viewBox="0 0 16 16"
+                        fill="none"
+                        aria-hidden="true"
+                      >
+                        <path
+                          d="M3.5 8H12.5M12.5 8L8.5 4M12.5 8L8.5 12"
+                          stroke="currentColor"
+                          strokeWidth="1.6"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        />
+                      </svg>
+                    </button>
+                  </div>
+
+                  {waitlistState.status === "error" && (
+                    <p
+                      id="waitlist-error"
+                      role="alert"
+                      className="mt-2.5 text-xs font-medium text-rose-400"
+                    >
+                      {waitlistState.message}
+                    </p>
+                  )}
+
+                  {/* Custom Tactile Switch Bar */}
+                  <div className="mt-3.5 flex flex-wrap items-center justify-between gap-2 border-t border-white/[0.06] pt-3 text-xs text-zinc-400">
+                    <div
+                      onClick={() => setMarketingOptIn((v) => !v)}
+                      className="inline-flex items-center gap-2.5 cursor-pointer select-none group"
+                    >
+                      <button
+                        type="button"
+                        role="switch"
+                        aria-checked={marketingOptIn}
+                        aria-label="Notify me when username claims open on 11 November"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setMarketingOptIn((v) => !v);
+                        }}
+                        className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full border transition-colors cursor-pointer ${
+                          marketingOptIn
+                            ? "border-[#D8FF5B]/50 bg-[#D8FF5B]/20"
+                            : "border-white/15 bg-white/[0.04]"
+                        }`}
+                      >
+                        <span
+                          className={`inline-block h-3.5 w-3.5 rounded-full transition-transform duration-200 ${
+                            marketingOptIn
+                              ? "translate-x-4 bg-[#D8FF5B]"
+                              : "translate-x-0.5 bg-zinc-500"
+                          }`}
+                        />
+                      </button>
+                      <span className="group-hover:text-zinc-200 transition-colors">
+                        Send me an invite when username claims open on{" "}
+                        <strong className="font-medium text-zinc-200">
+                          11 Nov
+                        </strong>
+                      </span>
+                    </div>
+
+                    <span className="font-mono text-[11px] text-zinc-500">
+                      Zero spam · Unsubscribe anytime
+                    </span>
+                  </div>
+                </div>
+              </form>
+            ) : (
+              /* Bespoke Early-Access Pass on Signup */
+              <div
+                role="status"
+                className="rounded-[24px] border border-[#D8FF5B]/30 bg-[#D8FF5B]/[0.03] p-1.5 sm:rounded-[28px] sm:p-2"
+              >
+                <div className="flex flex-col justify-between gap-4 rounded-[18px] border border-[#D8FF5B]/20 bg-[#090B0E] p-5 sm:flex-row sm:items-center sm:rounded-[22px] sm:px-7 sm:py-5">
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2.5">
+                      <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-[#D8FF5B] text-black">
+                        <svg
+                          className="h-3 w-3"
+                          viewBox="0 0 12 12"
+                          fill="none"
+                        >
+                          <path
+                            d="M2.5 6.2L4.8 8.5L9.5 3.5"
+                            stroke="currentColor"
+                            strokeWidth="1.8"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                          />
+                        </svg>
+                      </span>
+                      <span className="text-sm font-semibold text-white">
+                        {waitlistState.duplicate
+                          ? "Your spot is already reserved"
+                          : "Early-access pass issued"}
+                      </span>
+                      <span className="rounded border border-[#D8FF5B]/30 bg-[#D8FF5B]/10 px-2 py-0.5 font-mono text-[11px] text-[#D8FF5B]">
+                        {waitlistState.passCode}
+                      </span>
+                    </div>
+                    <p className="text-xs text-zinc-400">
+                      We’ll dispatch your claim link to{" "}
+                      <span className="font-mono text-zinc-200">
+                        {email.trim()}
+                      </span>{" "}
+                      before{" "}
+                      <strong className="font-medium text-zinc-200">
                         11 November 2026
                       </strong>
                       .
                     </p>
                   </div>
-                )}
+
+                  <button
+                    type="button"
+                    onClick={downloadUsernameReminderIcs}
+                    className="inline-flex shrink-0 items-center justify-center gap-2 rounded-xl border border-white/15 bg-white/[0.04] px-4 py-2.5 text-xs font-medium text-white transition-colors hover:border-[#D8FF5B]/50 hover:bg-white/[0.08] cursor-pointer"
+                  >
+                    <svg className="h-3.5 w-3.5 text-[#D8FF5B]" viewBox="0 0 16 16" fill="none">
+                      <rect x="2" y="3" width="12" height="11" rx="2" stroke="currentColor" strokeWidth="1.4" />
+                      <path d="M5 1.5V4M11 1.5V4M2 6.5H14" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+                    </svg>
+                    <span>Add 11 Nov reminder (.ics)</span>
+                  </button>
+                </div>
               </div>
-            </div>
+            )}
           </div>
         </main>
+        {/* Minimal Footer */}
+        <footer className="flex flex-col items-center justify-between gap-3 border-t border-white/[0.06] py-6 text-xs text-zinc-500 sm:flex-row">
+          <div className="flex items-center gap-2">
+            <span className="font-semibold text-zinc-300">down.</span>
+            <span>© 2026 All rights reserved.</span>
+          </div>
 
-        {/* Minimalist Structural Footer */}
-        <footer className="flex flex-col items-start justify-between gap-3 border-t border-white/[0.08] px-5 py-4 font-mono text-[11px] tracking-[0.08em] text-[#565652] uppercase sm:flex-row sm:items-center sm:px-10">
-          <div>© 2026 DOWN INC. ALL RIGHTS RESERVED.</div>
-          <div className="flex items-center gap-6">
+          <div className="flex items-center gap-5">
             <button
               type="button"
               onClick={openContactModal}
-              className="transition-colors hover:text-[#EDEDEA] cursor-pointer"
+              className="transition-colors hover:text-zinc-200 cursor-pointer"
             >
-              PARTNERSHIPS & PRESS
+              Partnerships & Press
             </button>
             <button
               type="button"
               onClick={() => setActiveModal("privacy")}
-              className="transition-colors hover:text-[#EDEDEA] cursor-pointer"
+              className="transition-colors hover:text-zinc-200 cursor-pointer"
             >
-              PRIVACY
+              Privacy Policy
             </button>
           </div>
         </footer>
       </div>
 
       {/* ================================================================= */}
-      {/* MODAL 1: INQUIRIES                                                */}
+      {/* MODAL 1: CONTACT & PARTNERSHIPS                                   */}
       {/* ================================================================= */}
       {activeModal === "contact" && (
         <div
@@ -605,147 +817,162 @@ export default function DownPrelaunchPage() {
           onClick={(e) => {
             if (e.target === e.currentTarget) setActiveModal("none");
           }}
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 p-4 backdrop-blur-xs"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-md"
         >
-          <div className="relative max-h-[90dvh] w-full max-w-lg overflow-y-auto border border-white/15 bg-[#0A0A0A] p-6 sm:p-8">
-            <div className="flex items-center justify-between border-b border-white/[0.08] pb-4">
-              <div>
-                <span className="font-mono text-[10px] tracking-[0.14em] text-[#7A7A75] uppercase">
-                  DIRECT CHANNEL
-                </span>
-                <h2
-                  id="contact-modal-title"
-                  className="mt-0.5 text-lg font-medium text-[#EDEDEA]"
-                >
-                  Inquiries & Press
-                </h2>
-              </div>
-              <button
-                type="button"
-                aria-label="Close modal"
-                onClick={() => setActiveModal("none")}
-                className="border border-white/10 px-2.5 py-1 font-mono text-[11px] text-[#7A7A75] transition-colors hover:border-white/30 hover:text-[#EDEDEA] cursor-pointer"
-              >
-                ESC
-              </button>
-            </div>
-
-            {contactState.status !== "success" ? (
-              <form onSubmit={handleContactSubmit} className="mt-6 space-y-5">
+          <div className="w-full max-w-md rounded-[26px] border border-white/[0.08] bg-white/[0.02] p-1.5 shadow-2xl">
+            <div className="max-h-[88dvh] overflow-y-auto rounded-[20px] border border-white/[0.08] bg-[#0A0B0E] p-6">
+              <div className="flex items-start justify-between gap-4 border-b border-white/[0.07] pb-4">
                 <div>
-                  <label className="mb-2 block font-mono text-[11px] tracking-[0.1em] text-[#7A7A75] uppercase">
-                    Department
-                  </label>
-                  <div className="grid grid-cols-3 gap-2">
-                    {(
-                      [
-                        { id: "marketing", label: "Partnerships" },
-                        { id: "updates", label: "Product" },
-                        { id: "press", label: "Press" },
-                      ] as const
-                    ).map((tab) => (
-                      <button
-                        type="button"
-                        key={tab.id}
-                        onClick={() => setContactType(tab.id)}
-                        className={`border py-2.5 font-mono text-xs uppercase transition-colors cursor-pointer ${
-                          contactType === tab.id
-                            ? "border-[#D9FF54] bg-[#D9FF54]/10 text-[#D9FF54]"
-                            : "border-white/10 bg-[#0E0E0E] text-[#7A7A75] hover:text-[#EDEDEA]"
-                        }`}
-                      >
-                        {tab.label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                <div>
-                  <label
-                    htmlFor="contact-email"
-                    className="mb-2 block font-mono text-[11px] tracking-[0.1em] text-[#7A7A75] uppercase"
+                  <h2
+                    id="contact-modal-title"
+                    className="text-base font-semibold text-white"
                   >
-                    Return Email
-                  </label>
-                  <input
-                    id="contact-email"
-                    type="email"
-                    required
-                    autoComplete="email"
-                    spellCheck={false}
-                    value={contactEmail}
-                    onChange={(e) => setContactEmail(e.target.value)}
-                    placeholder="name@company.com"
-                    className="w-full border border-white/15 bg-[#0C0C0C] px-3.5 py-2.5 font-mono text-base text-[#EDEDEA] placeholder:text-[#565652] focus:border-[#D9FF54] focus:outline-none sm:text-sm"
-                  />
-                </div>
-
-                <div>
-                  <label
-                    htmlFor="contact-message"
-                    className="mb-2 block font-mono text-[11px] tracking-[0.1em] text-[#7A7A75] uppercase"
-                  >
-                    Message
-                  </label>
-                  <textarea
-                    id="contact-message"
-                    rows={4}
-                    required
-                    value={contactMessage}
-                    onChange={(e) => setContactMessage(e.target.value)}
-                    placeholder="Write your message..."
-                    className="w-full border border-white/15 bg-[#0C0C0C] px-3.5 py-2.5 text-base text-[#EDEDEA] placeholder:text-[#565652] focus:border-[#D9FF54] focus:outline-none sm:text-sm"
-                  />
-                </div>
-
-                {contactState.status === "error" && (
-                  <p role="alert" className="font-mono text-xs text-[#FF5A36]">
-                    ! {contactState.message}
+                    Inquiries & Partnerships
+                  </h2>
+                  <p className="mt-0.5 text-xs text-zinc-400">
+                    Direct line to the founding team.
                   </p>
-                )}
-
-                <div className="flex items-center justify-between border-t border-white/[0.08] pt-4">
-                  <a
-                    href="mailto:marketing@down.social"
-                    className="font-mono text-xs text-[#7A7A75] underline underline-offset-4 hover:text-[#EDEDEA]"
-                  >
-                    marketing@down.social
-                  </a>
-                  <button
-                    type="submit"
-                    disabled={contactState.status === "submitting"}
-                    className="bg-[#EDEDEA] px-6 py-2.5 font-mono text-xs font-semibold tracking-[0.08em] text-[#080808] uppercase transition-colors hover:bg-[#D9FF54] disabled:opacity-50 cursor-pointer"
-                  >
-                    {contactState.status === "submitting"
-                      ? "Sending…"
-                      : "Transmit →"}
-                  </button>
                 </div>
-              </form>
-            ) : (
-              <div role="status" className="my-8 space-y-3">
-                <div className="font-mono text-xs text-[#D9FF54] uppercase">
-                  [TRANSMISSION RECEIVED]
-                </div>
-                <p className="text-sm text-[#A0A09A]">
-                  Thank you. Our team has logged your inquiry and will respond
-                  directly via email.
-                </p>
                 <button
                   type="button"
+                  aria-label="Close modal"
                   onClick={() => setActiveModal("none")}
-                  className="mt-4 border border-white/15 px-5 py-2 font-mono text-xs text-[#EDEDEA] uppercase hover:border-white/40 cursor-pointer"
+                  className="rounded-lg border border-white/10 bg-white/[0.03] px-2 py-1 font-mono text-[10px] text-zinc-400 transition-colors hover:text-white cursor-pointer"
                 >
-                  Close
+                  ESC
                 </button>
               </div>
-            )}
+
+              {contactState.status !== "success" ? (
+                <form onSubmit={handleContactSubmit} className="mt-5 space-y-4">
+                  <div>
+                    <label className="mb-2 block text-xs font-medium text-zinc-300">
+                      Topic
+                    </label>
+                    <div className="grid grid-cols-3 gap-2">
+                      {(
+                        [
+                          { id: "marketing", label: "Partnerships" },
+                          { id: "updates", label: "Product" },
+                          { id: "press", label: "Press" },
+                        ] as const
+                      ).map((tab) => (
+                        <button
+                          type="button"
+                          key={tab.id}
+                          onClick={() => setContactType(tab.id)}
+                          className={`rounded-xl border py-2 text-xs font-medium transition-colors cursor-pointer ${
+                            contactType === tab.id
+                              ? "border-[#D8FF5B]/50 bg-[#D8FF5B]/10 text-[#D8FF5B]"
+                              : "border-white/10 bg-white/[0.02] text-zinc-400 hover:text-white"
+                          }`}
+                        >
+                          {tab.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div>
+                    <label
+                      htmlFor="contact-email"
+                      className="mb-1.5 block text-xs font-medium text-zinc-300"
+                    >
+                      Your email
+                    </label>
+                    <input
+                      id="contact-email"
+                      type="email"
+                      required
+                      autoComplete="email"
+                      spellCheck={false}
+                      value={contactEmail}
+                      onChange={(e) => setContactEmail(e.target.value)}
+                      placeholder="you@company.com"
+                      className="w-full rounded-xl border border-white/10 bg-[#07080A] px-3.5 py-2.5 text-base text-white placeholder:text-zinc-500 focus:border-[#D8FF5B]/70 focus:outline-none sm:text-sm"
+                    />
+                  </div>
+
+                  <div>
+                    <label
+                      htmlFor="contact-message"
+                      className="mb-1.5 block text-xs font-medium text-zinc-300"
+                    >
+                      Message
+                    </label>
+                    <textarea
+                      id="contact-message"
+                      rows={4}
+                      required
+                      value={contactMessage}
+                      onChange={(e) => setContactMessage(e.target.value)}
+                      placeholder="How can we collaborate?"
+                      className="w-full rounded-xl border border-white/10 bg-[#07080A] px-3.5 py-2.5 text-base text-white placeholder:text-zinc-500 focus:border-[#D8FF5B]/70 focus:outline-none sm:text-sm"
+                    />
+                  </div>
+
+                  {contactState.status === "error" && (
+                    <p
+                      role="alert"
+                      className="text-xs font-medium text-rose-400"
+                    >
+                      {contactState.message}
+                    </p>
+                  )}
+
+                  <div className="flex items-center justify-between border-t border-white/[0.07] pt-4">
+                    <a
+                      href="mailto:marketing@down.social"
+                      className="font-mono text-xs text-zinc-400 underline decoration-white/20 underline-offset-4 hover:text-white"
+                    >
+                      marketing@down.social
+                    </a>
+                    <button
+                      type="submit"
+                      disabled={contactState.status === "submitting"}
+                      className="rounded-xl bg-[#D8FF5B] px-5 py-2.5 text-xs font-semibold text-black transition-colors hover:bg-[#e2ff7d] disabled:opacity-50 cursor-pointer"
+                    >
+                      {contactState.status === "submitting"
+                        ? "Sending…"
+                        : "Send message"}
+                    </button>
+                  </div>
+                </form>
+              ) : (
+                <div role="status" className="my-6 text-center">
+                  <div className="mx-auto mb-3 flex h-9 w-9 items-center justify-center rounded-full bg-[#D8FF5B]/15 text-[#D8FF5B]">
+                    <svg className="h-4 w-4" viewBox="0 0 12 12" fill="none">
+                      <path
+                        d="M2.5 6.2L4.8 8.5L9.5 3.5"
+                        stroke="currentColor"
+                        strokeWidth="1.8"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                    </svg>
+                  </div>
+                  <p className="text-sm font-semibold text-white">
+                    Message received
+                  </p>
+                  <p className="mt-1 text-xs text-zinc-400">
+                    Thank you. Our team will respond directly via email.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setActiveModal("none")}
+                    className="mt-5 rounded-xl border border-white/10 bg-white/[0.04] px-5 py-2 text-xs font-medium text-white hover:bg-white/10 cursor-pointer"
+                  >
+                    Done
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
         </div>
       )}
 
       {/* ================================================================= */}
-      {/* MODAL 2: PRIVACY                                                  */}
+      {/* MODAL 2: PRIVACY POLICY                                           */}
       {/* ================================================================= */}
       {activeModal === "privacy" && (
         <div
@@ -755,83 +982,84 @@ export default function DownPrelaunchPage() {
           onClick={(e) => {
             if (e.target === e.currentTarget) setActiveModal("none");
           }}
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 p-4 backdrop-blur-xs"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-md"
         >
-          <div className="relative max-h-[85dvh] w-full max-w-lg overflow-y-auto border border-white/15 bg-[#0A0A0A] p-6 sm:p-8">
-            <div className="flex items-center justify-between border-b border-white/[0.08] pb-4">
-              <div>
-                <span className="font-mono text-[10px] tracking-[0.14em] text-[#7A7A75] uppercase">
-                  DATA GOVERNANCE
-                </span>
-                <h2
-                  id="privacy-modal-title"
-                  className="mt-0.5 text-lg font-medium text-[#EDEDEA]"
+          <div className="w-full max-w-md rounded-[26px] border border-white/[0.08] bg-white/[0.02] p-1.5 shadow-2xl">
+            <div className="max-h-[85dvh] overflow-y-auto rounded-[20px] border border-white/[0.08] bg-[#0A0B0E] p-6">
+              <div className="flex items-start justify-between gap-4 border-b border-white/[0.07] pb-4">
+                <div>
+                  <h2
+                    id="privacy-modal-title"
+                    className="text-base font-semibold text-white"
+                  >
+                    Privacy Policy
+                  </h2>
+                  <p className="mt-0.5 text-xs text-zinc-400">
+                    How we handle pre-release waitlist data.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  aria-label="Close modal"
+                  onClick={() => setActiveModal("none")}
+                  className="rounded-lg border border-white/10 bg-white/[0.03] px-2 py-1 font-mono text-[10px] text-zinc-400 transition-colors hover:text-white cursor-pointer"
                 >
-                  Privacy Policy
-                </h2>
+                  ESC
+                </button>
               </div>
-              <button
-                type="button"
-                aria-label="Close modal"
-                onClick={() => setActiveModal("none")}
-                className="border border-white/10 px-2.5 py-1 font-mono text-[11px] text-[#7A7A75] transition-colors hover:border-white/30 hover:text-[#EDEDEA] cursor-pointer"
-              >
-                ESC
-              </button>
-            </div>
 
-            <div className="mt-6 space-y-5 text-xs leading-relaxed text-[#A0A09A]">
-              <div>
-                <div className="font-mono text-[11px] text-[#EDEDEA] uppercase">
-                  01 // Collection Scope
+              <div className="mt-5 space-y-4 text-xs leading-relaxed text-zinc-400">
+                <div>
+                  <h3 className="font-semibold text-white">
+                    1. Minimal collection
+                  </h3>
+                  <p className="mt-1">
+                    We collect only your email address and notification
+                    preference when you reserve a waitlist spot or send an
+                    inquiry.
+                  </p>
                 </div>
-                <p className="mt-1.5">
-                  During pre-release, <strong className="text-[#EDEDEA]">down.</strong>{" "}
-                  collects only your email address and notification preference
-                  when you reserve access or submit an inquiry.
-                </p>
-              </div>
 
-              <div>
-                <div className="font-mono text-[11px] text-[#EDEDEA] uppercase">
-                  02 // Usage Schedule
+                <div>
+                  <h3 className="font-semibold text-white">
+                    2. Release communications
+                  </h3>
+                  <p className="mt-1">
+                    Your email is used strictly to send your username claim
+                    invite on{" "}
+                    <strong className="text-zinc-200">11 November 2026</strong>{" "}
+                    and our launch notice on{" "}
+                    <strong className="text-zinc-200">25 November 2026</strong>.
+                  </p>
                 </div>
-                <p className="mt-1.5">
-                  Your email is used strictly to dispatch your username claim
-                  invitation on{" "}
-                  <strong className="text-[#EDEDEA]">11 November 2026</strong>{" "}
-                  and the release notice on{" "}
-                  <strong className="text-[#EDEDEA]">25 November 2026</strong>.
-                </p>
-              </div>
 
-              <div>
-                <div className="font-mono text-[11px] text-[#EDEDEA] uppercase">
-                  03 // Zero Brokerage
+                <div>
+                  <h3 className="font-semibold text-white">
+                    3. Zero data sharing
+                  </h3>
+                  <p className="mt-1">
+                    We never sell, rent, or share your information with third
+                    parties. Every email includes a one-click unsubscribe link.
+                  </p>
                 </div>
-                <p className="mt-1.5">
-                  We do not sell, rent, or share waitlist records with third
-                  parties. You may revoke access or request permanent deletion
-                  at any time.
-                </p>
               </div>
-            </div>
 
-            <div className="mt-8 flex items-center justify-between border-t border-white/[0.08] pt-4">
-              <button
-                type="button"
-                onClick={openContactModal}
-                className="font-mono text-xs text-[#D9FF54] uppercase hover:underline cursor-pointer"
-              >
-                Contact DPO →
-              </button>
-              <button
-                type="button"
-                onClick={() => setActiveModal("none")}
-                className="border border-white/15 px-5 py-2 font-mono text-xs text-[#EDEDEA] uppercase hover:border-white/40 cursor-pointer"
-              >
-                Acknowledge
-              </button>
+              <div className="mt-6 flex items-center justify-between border-t border-white/[0.07] pt-4">
+                <button
+                  type="button"
+                  onClick={openContactModal}
+                  className="text-xs font-medium text-[#D8FF5B] hover:underline cursor-pointer"
+                >
+                  Questions? Contact us →
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveModal("none")}
+                  className="rounded-xl border border-white/10 bg-white/[0.04] px-4 py-2 text-xs font-medium text-white hover:bg-white/10 cursor-pointer"
+                >
+                  Close
+                </button>
+              </div>
             </div>
           </div>
         </div>
