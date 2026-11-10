@@ -3,8 +3,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { supabase } from "@/lib/supabase";
 
-// Target timestamps (IST / UTC+05:30)
-const USERNAME_OPEN_DATE = new Date("2026-11-11T00:00:00+05:30").getTime();
+// Official Public Release: November 25, 2026 at 00:00 IST (UTC+05:30)
 const LAUNCH_DATE = new Date("2026-11-25T00:00:00+05:30").getTime();
 
 type ActiveOverlay = "none" | "contact" | "privacy";
@@ -14,7 +13,7 @@ type ThemeMode = "obsidian" | "paper";
 type WaitlistState =
   | { status: "idle" }
   | { status: "submitting" }
-  | { status: "success"; duplicate: boolean }
+  | { status: "success"; duplicate: boolean; passId: string }
   | { status: "error"; message: string };
 
 type ContactState =
@@ -29,7 +28,6 @@ interface CountdownTime {
   minutes: string;
   seconds: string;
   rawSeconds: number;
-  usernameDaysLeft: number;
   istTime: string;
 }
 
@@ -43,9 +41,6 @@ function readCountdown(): CountdownTime {
   const h = Math.floor((diff / 3_600_000) % 24);
   const m = Math.floor((diff / 60_000) % 60);
   const s = Math.floor((diff / 1000) % 60);
-
-  const usernameDiff = Math.max(0, USERNAME_OPEN_DATE - now);
-  const usernameDaysLeft = Math.ceil(usernameDiff / 86_400_000);
 
   const istTime = new Intl.DateTimeFormat("en-GB", {
     timeZone: "Asia/Kolkata",
@@ -61,22 +56,33 @@ function readCountdown(): CountdownTime {
     minutes: String(m).padStart(2, "0"),
     seconds: String(s).padStart(2, "0"),
     rawSeconds: s,
-    usernameDaysLeft,
     istTime,
   };
 }
 
-/** Downloads an .ics calendar event for the Nov 11 username claim drop */
-function downloadUsernameReminderIcs() {
+/** Deterministic pass number generated from the subscriber's email */
+function createPassNumber(email: string): string {
+  let hash = 2166136261;
+  for (let i = 0; i < email.length; i++) {
+    hash ^= email.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  const serial = Math.abs(hash % 90000) + 10000;
+  return `NO. ${serial}`;
+}
+
+/** Downloads an .ics calendar event for the Nov 25, 2026 launch */
+function downloadLaunchReminderIcs() {
   const ics = [
     "BEGIN:VCALENDAR",
     "VERSION:2.0",
-    "PRODID:-//down.//Prelaunch//EN",
+    "PRODID:-//down.//imdown.in//EN",
     "BEGIN:VEVENT",
-    "DTSTART:20261110T183000Z",
-    "DTEND:20261110T193000Z",
-    "SUMMARY:down. — Claim Your Username",
-    "DESCRIPTION:Early-access username reservation is now live for waitlist members.",
+    "DTSTART:20261124T183000Z",
+    "DTEND:20261124T193000Z",
+    "SUMMARY:down. — Official Public Launch (imdown.in)",
+    "DESCRIPTION:down. is now live. Open https://imdown.in to access the release.",
+    "URL:https://imdown.in",
     "END:VEVENT",
     "END:VCALENDAR",
   ].join("\r\n");
@@ -85,13 +91,13 @@ function downloadUsernameReminderIcs() {
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
-  link.download = "down-username-claim.ics";
+  link.download = "down-launch-2026.ics";
   link.click();
   URL.revokeObjectURL(url);
 }
 
 /**
- * Proportional vertical digit reel with soft top/bottom optical mask.
+ * Proportional vertical digit reel with soft optical vignette masks.
  */
 function EditorialDigit({ char }: { char: string }) {
   const num = Number.parseInt(char, 10);
@@ -141,7 +147,7 @@ function EditorialNumber({ value }: { value: string }) {
 
 /**
  * Monumental Sculptural Countdown.
- * Includes interactive column hover depth and a live 60-second liquid sweep hairline.
+ * Focused exclusively on the November 25, 2026 public launch.
  */
 function SculpturalCountdown() {
   const [time, setTime] = useState<CountdownTime>({
@@ -150,7 +156,6 @@ function SculpturalCountdown() {
     minutes: "00",
     seconds: "00",
     rawSeconds: 0,
-    usernameDaysLeft: 5,
     istTime: "--:--:--",
   });
   const [mounted, setMounted] = useState(false);
@@ -172,7 +177,7 @@ function SculpturalCountdown() {
   }, []);
 
   const columns = [
-    { index: "01", label: "Days", sub: "Until launch", value: time.days },
+    { index: "01", label: "Days", sub: "Until release", value: time.days },
     { index: "02", label: "Hours", sub: "Remaining", value: time.hours },
     { index: "03", label: "Minutes", sub: "Remaining", value: time.minutes },
     {
@@ -184,14 +189,14 @@ function SculpturalCountdown() {
     },
   ];
 
-  // Smooth 0-100% sweep across each minute
+  // Smooth 0-100% progress sweep across each minute
   const minuteSweepPercent = mounted
     ? Math.round(((60 - time.rawSeconds) / 60) * 100)
     : 0;
 
   return (
     <section aria-label="Countdown to launch" className="w-full py-4 sm:py-8">
-      {/* Top Status Bar + Live Liquid Hairline */}
+      {/* Top Status Bar + Live 60-Second Liquid Hairline */}
       <div className="relative pt-4">
         <div
           aria-hidden="true"
@@ -203,7 +208,7 @@ function SculpturalCountdown() {
             style={{
               width: `${minuteSweepPercent}%`,
               backgroundColor: "var(--fg)",
-              opacity: 0.65,
+              opacity: 0.7,
             }}
           />
         </div>
@@ -215,17 +220,16 @@ function SculpturalCountdown() {
               style={{ backgroundColor: "var(--fg)" }}
             />
             <span className="font-medium" style={{ color: "var(--fg)" }}>
-              Global Public Release
+              Countdown to Public Release
             </span>
             <span style={{ color: "var(--muted)" }}>
               · IST {mounted ? time.istTime : "--:--:--"}
             </span>
           </div>
 
-          {/* High-Visibility Milestone Badges */}
-          <div className="flex flex-wrap items-center gap-2 sm:gap-3">
+          <div className="flex items-center gap-2">
             <span
-              className="inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-medium"
+              className="inline-flex items-center gap-2 rounded-full border px-3.5 py-1 text-xs font-medium"
               style={{
                 borderColor: "var(--border-strong)",
                 backgroundColor: "var(--surface)",
@@ -236,20 +240,7 @@ function SculpturalCountdown() {
                 className="h-1.5 w-1.5 rounded-full"
                 style={{ backgroundColor: "var(--fg)" }}
               />
-              Usernames open Nov 11
-              {mounted && time.usernameDaysLeft > 0
-                ? ` · ${time.usernameDaysLeft}d left`
-                : ""}
-            </span>
-
-            <span
-              className="hidden sm:inline-flex items-center rounded-full border px-3 py-1 text-xs"
-              style={{
-                borderColor: "var(--border)",
-                color: "var(--muted)",
-              }}
-            >
-              Full Launch · Nov 25, 2026
+              Official Launch · November 25, 2026
             </span>
           </div>
         </div>
@@ -270,7 +261,7 @@ function SculpturalCountdown() {
             }`}
             style={{ borderColor: "var(--border)" }}
           >
-            {/* Subtle hover spotlight inside each column */}
+            {/* Subtle hover illumination inside each column */}
             <div
               aria-hidden="true"
               className="pointer-events-none absolute inset-0 opacity-0 transition-opacity duration-500 group-hover:opacity-100"
@@ -301,8 +292,10 @@ function SculpturalCountdown() {
             </div>
 
             <div
-              className={`relative z-10 mt-4 text-[clamp(4.25rem,11.2vw,10.25rem)] font-light leading-[0.92] tracking-[-0.055em] sm:mt-7 ${
-                col.isSeconds ? "opacity-65 group-hover:opacity-100 transition-opacity" : ""
+              className={`relative z-10 mt-4 text-[clamp(4.25rem,11.5vw,10.5rem)] font-light leading-[0.92] tracking-[-0.055em] sm:mt-7 ${
+                col.isSeconds
+                  ? "opacity-65 transition-opacity group-hover:opacity-100"
+                  : ""
               }`}
               style={{ color: "var(--fg)" }}
             >
@@ -317,6 +310,7 @@ function SculpturalCountdown() {
 export default function DownPrelaunchPage() {
   const emailInputRef = useRef<HTMLInputElement>(null);
   const [theme, setTheme] = useState<ThemeMode>("obsidian");
+  const [copiedLink, setCopiedLink] = useState(false);
 
   // Waitlist state
   const [email, setEmail] = useState("");
@@ -330,7 +324,7 @@ export default function DownPrelaunchPage() {
   const [contactMessage, setContactMessage] = useState("");
   const [contact, setContact] = useState<ContactState>({ status: "idle" });
 
-  // Press "/" to focus email input, or Escape to close overlays
+  // Keyboard shortcuts: "/" focuses the waitlist input, "Escape" closes overlays
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape" && overlay !== "none") {
@@ -350,7 +344,7 @@ export default function DownPrelaunchPage() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [overlay]);
 
-  // Lock page scroll when an overlay is open
+  // Lock background scroll when an overlay is open
   useEffect(() => {
     if (overlay === "none") return;
     const prev = document.body.style.overflow;
@@ -363,6 +357,16 @@ export default function DownPrelaunchPage() {
   const openContact = () => {
     setContact({ status: "idle" });
     setOverlay("contact");
+  };
+
+  const handleCopyInviteLink = async () => {
+    try {
+      await navigator.clipboard.writeText("https://imdown.in");
+      setCopiedLink(true);
+      window.setTimeout(() => setCopiedLink(false), 2200);
+    } catch {
+      setCopiedLink(false);
+    }
   };
 
   const handleWaitlistSubmit = async (e: React.FormEvent) => {
@@ -378,16 +382,18 @@ export default function DownPrelaunchPage() {
     }
 
     setWaitlist({ status: "submitting" });
+    const passId = createPassNumber(cleanEmail);
 
     try {
       let { error } = await supabase.from("waitlist_subscribers").insert([
         {
           email: cleanEmail,
           marketing_opt_in: marketingOptIn,
-          source: "down_editorial_sotd_2026",
+          source: "imdown_prelaunch_2026",
         },
       ]);
 
+      // Resilient fallback if the table only has an `email` column
       if (
         error &&
         error.code !== "23505" &&
@@ -408,7 +414,7 @@ export default function DownPrelaunchPage() {
           error.message?.toLowerCase().includes("unique");
 
         if (isDuplicate) {
-          setWaitlist({ status: "success", duplicate: true });
+          setWaitlist({ status: "success", duplicate: true, passId });
         } else {
           setWaitlist({
             status: "error",
@@ -416,7 +422,7 @@ export default function DownPrelaunchPage() {
           });
         }
       } else {
-        setWaitlist({ status: "success", duplicate: false });
+        setWaitlist({ status: "success", duplicate: false, passId });
       }
     } catch {
       setWaitlist({
@@ -481,8 +487,8 @@ export default function DownPrelaunchPage() {
             ? "rgba(17, 17, 16, 0.14)"
             : "rgba(244, 241, 234, 0.14)",
           "--border-strong": isPaper
-            ? "rgba(17, 17, 16, 0.32)"
-            : "rgba(244, 241, 234, 0.32)",
+            ? "rgba(17, 17, 16, 0.34)"
+            : "rgba(244, 241, 234, 0.34)",
           "--surface": isPaper
             ? "rgba(17, 17, 16, 0.045)"
             : "rgba(244, 241, 234, 0.055)",
@@ -497,6 +503,7 @@ export default function DownPrelaunchPage() {
       }
       className="relative min-h-dvh w-full transition-colors duration-700 ease-out antialiased selection:bg-[#F4F1EA] selection:text-[#090908]"
     >
+      {/* Note: While Next.js supports build-time font optimization via next/font, we load these directly via CSS to keep your setup in a single self-contained file */}
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Plus+Jakarta+Sans:wght@300;400;500;600&display=swap');
 
@@ -521,15 +528,15 @@ export default function DownPrelaunchPage() {
         className="pointer-events-none fixed inset-0 z-0"
         style={{
           background: isPaper
-            ? "radial-gradient(70% 50% at 50% 0%, rgba(255, 255, 255, 0.6) 0%, transparent 100%)"
-            : "radial-gradient(70% 50% at 50% 0%, rgba(244, 241, 234, 0.05) 0%, transparent 100%)",
+            ? "radial-gradient(70% 50% at 50% 0%, rgba(255, 255, 255, 0.65) 0%, transparent 100%)"
+            : "radial-gradient(70% 50% at 50% 0%, rgba(244, 241, 234, 0.055) 0%, transparent 100%)",
         }}
       />
 
       {/* Main Editorial Wrapper */}
       <div className="relative z-10 mx-auto flex min-h-dvh max-w-[1400px] flex-col justify-between px-5 py-6 sm:px-12 sm:py-9">
         {/* =============================================================== */}
-        {/* HEADER — High-Visibility Pill Buttons for Inquiries & Privacy   */}
+        {/* HEADER — High-Visibility Navigation Pills + Theme Switcher      */}
         {/* =============================================================== */}
         <header className="flex flex-wrap items-center justify-between gap-4">
           <a
@@ -621,9 +628,9 @@ export default function DownPrelaunchPage() {
                 className="mt-4 max-w-md text-sm font-normal leading-relaxed sm:text-base"
                 style={{ color: "var(--muted)" }}
               >
-                Spontaneous plans with the people you actually know. No public
-                follower counts, no performative feeds, and no algorithmic
-                noise.
+                Spontaneous plans with the people you actually know—studying,
+                sports, or late-night hangouts. No public metrics, no
+                performative feeds, and no algorithmic noise.
               </p>
             </div>
 
@@ -656,7 +663,7 @@ export default function DownPrelaunchPage() {
                           setWaitlist({ status: "idle" });
                         }
                       }}
-                      placeholder="Enter your email address…"
+                      placeholder="Enter your email for early access…"
                       aria-invalid={waitlist.status === "error"}
                       style={{ color: "var(--fg)" }}
                       className="w-full bg-transparent pr-4 text-base font-light placeholder:opacity-50 focus:outline-none sm:text-lg"
@@ -725,54 +732,80 @@ export default function DownPrelaunchPage() {
                         )}
                       </span>
                       <span style={{ color: "var(--fg)" }}>
-                        Notify me when username claims open on Nov 11
+                        Notify me when down. launches on November 25
                       </span>
                     </label>
                   </div>
                 </form>
               ) : (
+                /* Interactive Launch Pass on Successful Signup */
                 <div
                   role="status"
-                  className="rounded-2xl border p-5"
+                  className="rounded-2xl border p-5 sm:p-6"
                   style={{
                     borderColor: "var(--border-strong)",
                     backgroundColor: "var(--surface)",
                   }}
                 >
-                  <div className="flex flex-wrap items-baseline justify-between gap-2">
-                    <p className="font-serif-editorial italic text-2xl sm:text-3xl">
-                      {waitlist.duplicate
-                        ? "You’re already on the list."
-                        : "You’re on the list."}
-                    </p>
-                    <button
-                      type="button"
-                      onClick={downloadUsernameReminderIcs}
-                      className="text-xs font-medium underline underline-offset-4 hover:opacity-75 cursor-pointer"
-                    >
-                      + Add Nov 11 Calendar Reminder
-                    </button>
+                  <div className="flex items-center justify-between border-b pb-3 text-[11px] uppercase tracking-widest" style={{ borderColor: "var(--border)", color: "var(--muted)" }}>
+                    <span>Early Access Pass · imdown.in</span>
+                    <span style={{ color: "var(--fg)" }}>{waitlist.passId}</span>
                   </div>
+
+                  <p className="mt-4 font-serif-editorial italic text-2xl sm:text-3xl">
+                    {waitlist.duplicate
+                      ? "You’re already on the list."
+                      : "You’re on the list."}
+                  </p>
+
                   <p
-                    className="mt-2 text-xs leading-relaxed"
+                    className="mt-1.5 text-xs leading-relaxed"
                     style={{ color: "var(--muted)" }}
                   >
-                    We’ll send your early-access invite to{" "}
+                    We’ve registered{" "}
                     <strong
                       className="font-medium"
                       style={{ color: "var(--fg)" }}
                     >
                       {email.trim()}
                     </strong>{" "}
-                    before username registration opens on{" "}
+                    for first-wave access on{" "}
                     <strong
                       className="font-medium"
                       style={{ color: "var(--fg)" }}
                     >
-                      November 11, 2026
+                      November 25, 2026
                     </strong>
                     .
                   </p>
+
+                  <div className="mt-4 flex flex-wrap items-center gap-2.5 pt-1">
+                    <button
+                      type="button"
+                      onClick={downloadLaunchReminderIcs}
+                      style={{
+                        backgroundColor: "var(--fg)",
+                        color: "var(--bg)",
+                      }}
+                      className="inline-flex items-center gap-1.5 rounded-full px-4 py-2 text-xs font-medium transition-opacity hover:opacity-85 cursor-pointer"
+                    >
+                      <span>+ Add Nov 25 to Calendar</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={handleCopyInviteLink}
+                      style={{
+                        borderColor: "var(--border-strong)",
+                        color: "var(--fg)",
+                      }}
+                      className="inline-flex items-center gap-1.5 rounded-full border px-4 py-2 text-xs font-medium transition-opacity hover:opacity-75 cursor-pointer"
+                    >
+                      <span>
+                        {copiedLink ? "Copied imdown.in ✓" : "Share imdown.in"}
+                      </span>
+                    </button>
+                  </div>
                 </div>
               )}
             </div>
@@ -792,7 +825,7 @@ export default function DownPrelaunchPage() {
                 down.
               </span>
               <span style={{ color: "var(--muted)" }}>
-                © 2026 All rights reserved.
+                © 2026 imdown.in · All rights reserved.
               </span>
             </div>
 
@@ -851,7 +884,7 @@ export default function DownPrelaunchPage() {
                   </span>
                 </h2>
                 <p className="mt-1 text-xs text-[#9A968E]">
-                  Partnerships, media kits, or product questions.
+                  Partnerships, campus ambassadorships, or product questions.
                 </p>
               </div>
               <button
@@ -906,7 +939,7 @@ export default function DownPrelaunchPage() {
                     required
                     value={contactEmail}
                     onChange={(e) => setContactEmail(e.target.value)}
-                    placeholder="name@company.com"
+                    placeholder="name@domain.com"
                     className="mt-2 w-full rounded-xl border border-[#F4F1EA]/20 bg-white/[0.04] px-4 py-3 text-base text-[#F4F1EA] placeholder:text-[#9A968E]/60 focus:border-[#F4F1EA] focus:outline-none"
                   />
                 </div>
@@ -939,10 +972,10 @@ export default function DownPrelaunchPage() {
                   <span className="text-xs text-[#9A968E]">
                     Direct email:{" "}
                     <a
-                      href="mailto:marketing@down.social"
+                      href="mailto:marketing@imdown.in"
                       className="font-medium text-[#F4F1EA] underline underline-offset-4"
                     >
-                      marketing@down.social
+                      marketing@imdown.in
                     </a>
                   </span>
 
@@ -1007,7 +1040,7 @@ export default function DownPrelaunchPage() {
                   </span>
                 </h2>
                 <p className="mt-1 text-xs text-[#9A968E]">
-                  How we handle pre-launch waitlist and inquiry data.
+                  How we handle pre-launch waitlist and inquiry data on imdown.in.
                 </p>
               </div>
               <button
@@ -1036,10 +1069,8 @@ export default function DownPrelaunchPage() {
                   2. Release Communications
                 </h3>
                 <p className="mt-1.5">
-                  Your email is used strictly to send your username claim
-                  invitation on{" "}
-                  <strong className="text-[#F4F1EA]">November 11, 2026</strong>{" "}
-                  and our official launch notice on{" "}
+                  Your email is used strictly to send your early-access
+                  invitation and our official public launch announcement on{" "}
                   <strong className="text-[#F4F1EA]">November 25, 2026</strong>.
                 </p>
               </div>
@@ -1051,7 +1082,14 @@ export default function DownPrelaunchPage() {
                 <p className="mt-1.5">
                   We never sell, rent, or trade your personal information. Every
                   email includes a one-click unsubscribe link, and you can
-                  request permanent deletion at any time.
+                  request permanent deletion at any time by emailing{" "}
+                  <a
+                    href="mailto:community@imdown.in"
+                    className="text-[#F4F1EA] underline underline-offset-4"
+                  >
+                    marketing@imdown.in
+                  </a>
+                  .
                 </p>
               </div>
             </div>
