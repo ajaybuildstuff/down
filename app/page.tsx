@@ -3,8 +3,8 @@
 import React, { useEffect, useRef, useState } from "react";
 import { supabase } from "@/lib/supabase";
 
-// Official Public Release: November 25, 2026 at 00:00 IST (UTC+05:30)
-const LAUNCH_DATE = new Date("2026-11-25T00:00:00+05:30").getTime();
+// Official Public Release: December 25, 2026 at 00:00 IST (UTC+05:30)
+const LAUNCH_DATE = new Date("2026-12-25T00:00:00+05:30").getTime();
 
 type ActiveOverlay = "none" | "contact" | "privacy";
 type ContactCategory = "marketing" | "updates" | "press";
@@ -71,15 +71,15 @@ function createPassNumber(email: string): string {
   return `NO. ${serial}`;
 }
 
-/** Downloads an .ics calendar event for the Nov 25, 2026 launch */
+/** Downloads an .ics calendar event for the Dec 25, 2026 launch */
 function downloadLaunchReminderIcs() {
   const ics = [
     "BEGIN:VCALENDAR",
     "VERSION:2.0",
     "PRODID:-//down.//imdown.in//EN",
     "BEGIN:VEVENT",
-    "DTSTART:20261124T183000Z",
-    "DTEND:20261124T193000Z",
+    "DTSTART:20261224T183000Z",
+    "DTEND:20261224T193000Z",
     "SUMMARY:down. — Official Public Launch (imdown.in)",
     "DESCRIPTION:down. is now live. Open https://imdown.in to access the release.",
     "URL:https://imdown.in",
@@ -147,7 +147,7 @@ function EditorialNumber({ value }: { value: string }) {
 
 /**
  * Monumental Sculptural Countdown.
- * Focused exclusively on the November 25, 2026 public launch.
+ * Focused exclusively on the December 25, 2026 public launch.
  */
 function SculpturalCountdown() {
   const [time, setTime] = useState<CountdownTime>({
@@ -240,7 +240,7 @@ function SculpturalCountdown() {
                 className="h-1.5 w-1.5 rounded-full"
                 style={{ backgroundColor: "var(--fg)" }}
               />
-              Official Launch · November 25, 2026
+              Official Launch · December 25, 2026
             </span>
           </div>
         </div>
@@ -307,6 +307,7 @@ function SculpturalCountdown() {
     </section>
   );
 }
+
 export default function DownPrelaunchPage() {
   const emailInputRef = useRef<HTMLInputElement>(null);
   const [theme, setTheme] = useState<ThemeMode>("obsidian");
@@ -732,7 +733,7 @@ export default function DownPrelaunchPage() {
                         )}
                       </span>
                       <span style={{ color: "var(--fg)" }}>
-                        Notify me when down. launches on November 25
+                        Notify me when down. launches on December 25
                       </span>
                     </label>
                   </div>
@@ -747,7 +748,13 @@ export default function DownPrelaunchPage() {
                     backgroundColor: "var(--surface)",
                   }}
                 >
-                  <div className="flex items-center justify-between border-b pb-3 text-[11px] uppercase tracking-widest" style={{ borderColor: "var(--border)", color: "var(--muted)" }}>
+                  <div
+                    className="flex items-center justify-between border-b pb-3 text-[11px] uppercase tracking-widest"
+                    style={{
+                      borderColor: "var(--border)",
+                      color: "var(--muted)",
+                    }}
+                  >
                     <span>Early Access Pass · imdown.in</span>
                     <span style={{ color: "var(--fg)" }}>{waitlist.passId}</span>
                   </div>
@@ -774,7 +781,7 @@ export default function DownPrelaunchPage() {
                       className="font-medium"
                       style={{ color: "var(--fg)" }}
                     >
-                      November 25, 2026
+                      December 25, 2026
                     </strong>
                     .
                   </p>
@@ -789,7 +796,7 @@ export default function DownPrelaunchPage() {
                       }}
                       className="inline-flex items-center gap-1.5 rounded-full px-4 py-2 text-xs font-medium transition-opacity hover:opacity-85 cursor-pointer"
                     >
-                      <span>+ Add Nov 25 to Calendar</span>
+                      <span>+ Add Dec 25 to Calendar</span>
                     </button>
 
                     <button
@@ -1071,7 +1078,7 @@ export default function DownPrelaunchPage() {
                 <p className="mt-1.5">
                   Your email is used strictly to send your early-access
                   invitation and our official public launch announcement on{" "}
-                  <strong className="text-[#F4F1EA]">November 25, 2026</strong>.
+                  <strong className="text-[#F4F1EA]">December 25, 2026</strong>.
                 </p>
               </div>
 
@@ -1084,7 +1091,7 @@ export default function DownPrelaunchPage() {
                   email includes a one-click unsubscribe link, and you can
                   request permanent deletion at any time by emailing{" "}
                   <a
-                    href="mailto:community@imdown.in"
+                    href="mailto:marketing@imdown.in"
                     className="text-[#F4F1EA] underline underline-offset-4"
                   >
                     marketing@imdown.in
